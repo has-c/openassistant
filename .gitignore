@@ -1,0 +1,7 @@
+*.zip
+zima_chat_env
+*.wav
+*.gguf
+dist_chat_only/
+dist_voice_chat_v2/
+models/
