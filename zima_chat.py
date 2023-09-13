@@ -11,7 +11,7 @@ class ChatbotGUI:
         self.root = root
         root.title("Zima Chat")  # Set the window title to "Zima Chat"
 
-        self.llm_model_path = "llama-2-7b-chat.Q5_K_M.gguf"
+        self.llm_model_path = "codellama-7b-instruct.Q5_K_M.gguf"
         self.llm = Llama(model_path=self.llm_model_path, n_ctx=2048)
         self.whisper_model = whisper.load_model("base.en")
         
