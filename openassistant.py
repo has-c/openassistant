@@ -10,7 +10,7 @@ import wave
 class ChatbotGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Zima Chat")  # Set the window title to "Zima Chat"
+        root.title("OpenAssistant Chat")  # Set the window title to "Zima Chat"
 
         self.llm_model_path = "tinyllama-1.1b-chat-v0.3.Q5_K_M.gguf"
         self.llm = Llama(model_path=self.llm_model_path, n_ctx=2048)
