@@ -10,16 +10,15 @@ import wave
 class ChatbotGUI:
     def __init__(self, root):
         self.root = root
-        root.title("OpenAssistant Chat")  # Set the window title to "Zima Chat"
+        root.title("OpenAssistant Chat")  # Set the window title to "OpenAssistant Chat"
 
-        self.llm_model_path = "tinyllama-1.1b-chat-v0.3.Q5_K_M.gguf"
+        self.llm_model_path = "mistral-7b-openorca.Q5_K_M.gguf"
         self.llm = Llama(model_path=self.llm_model_path, n_ctx=2048)
         self.whisper_model = whisper.load_model("base.en")
         
         self.create_interface()
         self.messages = [
             ChatCompletionMessage(role='system', content='start chat'),
-            ChatCompletionMessage(role='user', content='Hello')
         ]
         self.process_message()
         self.loading = False  # Flag to track loading state
@@ -36,8 +35,6 @@ class ChatbotGUI:
         self.audio_stream = None
         self.audio_frames = []
 
-        # self.load_chat_history()  # Load chat history from a file if it exists
-        
     def convert_speech_to_text(self, filepath):
         result = self.whisper_model.transcribe(filepath, fp16=False)
         return result["text"]
@@ -113,7 +110,20 @@ class ChatbotGUI:
             print("Error while saving audio:", str(e))
 
     def create_interface(self):
-        self.root.geometry("600x400")  # Set the initial window size
+        self.root.geometry("800x600")  # Set the initial window size
+        
+        # Create a sidebar frame
+        sidebar_frame = tk.Frame(self.root, width=200, bg="black")  # Change the background color to black
+        sidebar_frame.pack(fill=tk.Y, side=tk.LEFT)
+        
+        # Create buttons for sidebar options
+        button1 = tk.Button(sidebar_frame, text="New Chat", bg="black", fg="black", command=self.new_conversation)  # Change text color to black
+        button1.pack(pady=10)
+        
+        button2 = tk.Button(sidebar_frame, text="Save Chat", bg="black", fg="black", command=self.save_chat)  # Change text color to black
+        button2.pack(pady=10)
+
+        # Create a chat frame
         self.chat_frame = tk.Frame(self.root)
         self.chat_frame.pack(expand=True, fill=tk.BOTH)  # Make frame expand with window
 
@@ -132,21 +142,13 @@ class ChatbotGUI:
         self.send_button = tk.Button(button_frame, text="Send", command=self.send_message)
         self.send_button.grid(row=0, column=0, columnspan=2)  # Place the "Record Voice" button in row 0, column 0
 
-        # Create a "New Conversation" button
-        self.new_conversation_button = tk.Button(button_frame, text="New Chat", command=self.new_conversation)
-        self.new_conversation_button.grid(row=1, column=0) 
-
-        # Create a "Save Chat" button
-        self.save_chat_button = tk.Button(button_frame, text="Save Chat", command=self.save_chat)
-        self.save_chat_button.grid(row=1, column=1) 
-
         # Create a voice recording button
         self.record_button = tk.Button(button_frame, text="Record Voice", command=self.start_recording)
-        self.record_button.grid(row=2, column=0)  # Place the "Record Voice" button in row 0, column 0
+        self.record_button.grid(row=1, column=0)  # Place the "Record Voice" button in row 0, column 0
 
         # Create a "Stop Recording" button
         self.stop_record_button = tk.Button(button_frame, text="Stop Recording", command=self.stop_recording)
-        self.stop_record_button.grid(row=2, column=1)  # Place the "Stop Recording" button in row 0, column 1
+        self.stop_record_button.grid(row=1, column=1)  # Place the "Stop Recording" button in row 0, column 1
         self.stop_record_button["state"] = "disabled"  # Initially disable the button
 
         # Create a Progressbar widget and set it to be indeterminate
@@ -207,7 +209,6 @@ class ChatbotGUI:
         # Reset the chat history
         self.messages = [
             ChatCompletionMessage(role='system', content='start chat'),
-            ChatCompletionMessage(role='user', content='Hello')
         ]
         self.process_message()
 
@@ -245,6 +246,14 @@ class ChatbotGUI:
 
         except Exception as e:
             print("Error while loading chat history:", str(e))
+
+    def sidebar_option1(self):
+        # Define the action for Sidebar Option 1 button
+        pass
+
+    def sidebar_option2(self):
+        # Define the action for Sidebar Option 2 button
+        pass
 
 if __name__ == "__main__":
     root = tk.Tk()
