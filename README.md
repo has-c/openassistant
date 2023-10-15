@@ -1,5 +1,8 @@
 # OpenAssistant Chat
 
+Pre-requisite:
+- User will require Python3.11
+
 Dist download link: [Download link](https://drive.google.com/file/d/1lgGzSyj4_lE5f3nebiHaMa8d310HaCqT/view?usp=sharing)
 
 Change the path in `run.sh` to your local path.
