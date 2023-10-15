@@ -1,4 +1,6 @@
 # OpenAssistant Chat
+- Can be used with any LLama GGUF model variants.
+- Best one found so far: [Mistral-7B-OpenOrca-GGUF](https://huggingface.co/TheBloke/Mistral-7B-OpenOrca-GGUF)
 
 Pre-requisite:
 - User will require Python3.11
