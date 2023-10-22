@@ -17,3 +17,8 @@ Change the path in `run.sh` to your local path.
 python3 setup.py py2app
 ```
 
+# Beta Features
+
+1. Ability to interpret and process images
+- Multi-modal model functionality - adding [LLava](https://llava-vl.github.io) 
+- Image interpreted by LLava v1 functionality and further text QA performed by a LLama finetune
