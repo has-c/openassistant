@@ -1,6 +1,7 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, Label
 import tkinter.filedialog
+from tkinter import Label
 from llama_cpp import ChatCompletionMessage, Llama
 import whisper
 import threading
@@ -278,8 +279,13 @@ class ChatbotGUI:
             image = ImageTk.PhotoImage(image)
 
             self.messages.append(ChatCompletionMessage(role='user', content=f"Image submitted: {image_path}"))
-            self.messages.append(ChatCompletionMessage(role='assistant', content=f"{image}"))
-            self.messages.append(ChatCompletionMessage(role='assistant', content="Describe the image in detail"))
+            
+            # Create a Label widget to display the image
+            image_label = Label(self.chat_frame, image=image)
+            image_label.image = image  # Keep a reference to the image to prevent it from being garbage collected
+            image_label.pack()  # Add the label to your chat frame
+
+            # self.messages.append(ChatCompletionMessage(role='assistant', content="Describe the image in detail"))
 
             # Only display relevant information from stdout
             
