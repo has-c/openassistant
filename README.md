@@ -17,3 +17,14 @@ Change the path in `run.sh` to your local path.
 python3 setup.py py2app
 ```
 
+# Beta Features
+
+## 1. Ability to interpret and process images
+- Multi-modal model functionality - adding [LLava](https://llava-vl.github.io) 
+- Image interpreted by LLava v1 functionality and further text QA performed by a LLama finetune
+- Currently requires user to download llama_cpp (waiting for Python bindings to come along for adding a dist/production version)
+
+### Example usage:
+
+![Screenshot 2023-10-22 at 7 54 02 pm](https://github.com/has-c/openassistant/assets/29789857/7c59cb67-cf1d-4963-944e-1dcc9de39313)
+![example_response](https://github.com/has-c/openassistant/assets/29789857/9d31ba6b-4fc8-4a69-916b-b14d402e27f2)
