@@ -7,6 +7,7 @@ import threading
 import pyaudio
 import wave 
 import subprocess
+from PIL import Image, ImageTk
 
 class ChatbotGUI:
     def __init__(self, root):
@@ -267,15 +268,34 @@ class ChatbotGUI:
         # Construct the llava command with the provided image path
         llava_command = f"./llava -m {self.llava_model_path} --mmproj {self.llava_model_config_path} --image {image_path} --temp 0.1 -ngl 1"
 
-        # Execute the llava command and capture the output
+        # Execute the llava command, capture stdout and stderr
         try:
             output = subprocess.check_output(llava_command, shell=True, text=True, cwd=self.llama_cpp_path)
+
+            # Display the image
+            image = Image.open(image_path)
+            image = image.resize((200, 200))  # Adjust the size as needed
+            image = ImageTk.PhotoImage(image)
+
             self.messages.append(ChatCompletionMessage(role='user', content=f"Image submitted: {image_path}"))
-            self.messages.append(ChatCompletionMessage(role='assistant', content=output))
+            self.messages.append(ChatCompletionMessage(role='assistant', content=f"{image}"))
+            self.messages.append(ChatCompletionMessage(role='assistant', content="Describe the image in detail"))
+
+            # Only display relevant information from stdout
+            
+            # Output is full of junk that we dont want to show the user
+            # Trim output
+            output_chunks = output.split("\n")
+            # remove blank chunks
+            output_chunks = [chunk for chunk in output_chunks if chunk.strip() != '']
+            reply = [chunk for chunk in output_chunks if "prompt:" in output_chunks[output_chunks.index(chunk) - 1]][0].strip()
+            self.messages.append(ChatCompletionMessage(role='assistant', content=reply))
+
             self.update_chat_display()
         except subprocess.CalledProcessError as e:
             self.messages.append(ChatCompletionMessage(role='user', content=f"Image submission failed: {str(e)}"))
             self.update_chat_display()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
