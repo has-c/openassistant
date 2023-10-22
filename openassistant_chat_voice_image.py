@@ -41,6 +41,9 @@ class ChatbotGUI:
         self.audio_output_filename = "output.wav"
         self.audio_stream = None
         self.audio_frames = []
+        
+        # GUI image parameter    
+        self.image_frame = None  # Initialize the image_frame attribute
 
     def convert_speech_to_text(self, filepath):
         result = self.whisper_model.transcribe(filepath, fp16=False)
@@ -221,6 +224,11 @@ class ChatbotGUI:
         self.messages = [
             ChatCompletionMessage(role='system', content='start chat'),
         ]
+        # Remove the image (if it exists) from the chat frame
+        if self.image_frame is not None:
+            self.image_frame.pack_forget()
+            self.image_frame = None  # Reset the image_frame attribute
+            
         self.process_message()
 
     def save_chat(self):
@@ -280,11 +288,15 @@ class ChatbotGUI:
 
             self.messages.append(ChatCompletionMessage(role='user', content=f"Image submitted: {image_path}"))
             
-            # Create a Label widget to display the image
-            image_label = Label(self.chat_frame, image=image)
-            image_label.image = image  # Keep a reference to the image to prevent it from being garbage collected
-            image_label.pack()  # Add the label to your chat frame
-
+            # Create a Label widget to display the image within a frame
+            if self.image_frame is not None:
+                self.image_frame.pack_forget()
+            self.image_frame = tk.Frame(self.chat_frame)
+            self.image_label = Label(self.image_frame, image=image)
+            self.image_label.image = image
+            self.image_label.pack()
+            self.image_frame.pack()
+            
             # self.messages.append(ChatCompletionMessage(role='assistant', content="Describe the image in detail"))
 
             # Only display relevant information from stdout
@@ -294,12 +306,13 @@ class ChatbotGUI:
             output_chunks = output.split("\n")
             # remove blank chunks
             output_chunks = [chunk for chunk in output_chunks if chunk.strip() != '']
-            reply = [chunk for chunk in output_chunks if "prompt:" in output_chunks[output_chunks.index(chunk) - 1]][0].strip()
+            # Get reply - reply is one index behind prompt in the list
+            reply = [chunk for chunk in output_chunks if "prompt:" in output_chunks[output_chunks.index(chunk) - 1]][0].strip() + "\n"
             self.messages.append(ChatCompletionMessage(role='assistant', content=reply))
 
             self.update_chat_display()
         except subprocess.CalledProcessError as e:
-            self.messages.append(ChatCompletionMessage(role='user', content=f"Image submission failed: {str(e)}"))
+            self.messages.append(ChatCompletionMessage(role='user', content=f"Image submission failed: {str(e)} \n"))
             self.update_chat_display()
 
 
