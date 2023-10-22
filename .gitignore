@@ -5,3 +5,5 @@ zima_chat_env
 dist_chat_only/
 dist_voice_chat_v2/
 models/
+build/
+dist/
