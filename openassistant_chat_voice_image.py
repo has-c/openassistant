@@ -18,8 +18,8 @@ class ChatbotGUI:
         self.llm_model_path = "mistral-7b-openorca.Q5_K_M.gguf"
         self.llm = Llama(model_path=self.llm_model_path, n_ctx=2048)
         self.whisper_model = whisper.load_model("base.en")
-        self.llava_model_path = "/Users/hasnaincheena/Desktop/Projects/zima/llava_7b_1.5/llava-model-q5_k.gguf"
-        self.llava_model_config_path = "/Users/hasnaincheena/Desktop/Projects/zima/llava_7b_1.5/mmproj-model-f16.gguf"
+        self.llava_model_path = "models/llava-model-q5_k.gguf"
+        self.llava_model_config_path = "models/mmproj-model-f16.gguf"
         self.llama_cpp_path = "../llama.cpp"
         
         

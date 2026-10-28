@@ -1,0 +1,30 @@
+services:
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu@sha256:7f9a256919eff7a84e9a77b757de0f3fe95c48fcf4fbe1e008deacbc7d9f2985
+    container_name: openassistant-kokoro
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8880:8880"
+    cpus: 4
+    mem_limit: 4g
+    environment:
+      USE_GPU: "false"
+      DEVICE_TYPE: cpu
+      WEB_CONCURRENCY: "1"
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      DEFAULT_VOICE: af_sky
+      MODEL_AUTO_UNLOAD_TIMEOUT_SECONDS: "0"
+      MAX_INPUT_LENGTH: "2000"
+      API_LOG_LEVEL: ERROR
+      ENABLE_WEB_PLAYER: "false"
+      ENABLE_DEBUG_ENDPOINTS: "false"
+      ALLOW_DEV_UNLOAD: "false"
+      ENABLE_SSML: "false"
+      ENABLE_VOICE_TAGS: "false"
+      CORS_ENABLED: "false"
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "2"

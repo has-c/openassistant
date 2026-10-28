@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenAssistant</title><link rel="icon" type="image/svg+xml" href="static/openassistant-mark.svg"><link rel="stylesheet" href="static/style.css"><script defer src="static/voice.js"></script><script defer src="static/app.js"></script></head>
+<body>
+<svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></symbol>
+<symbol id="i-sound" viewBox="0 0 24 24"><path d="M11 4 6 8H3v8h3l5 4V4Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+<symbol id="i-phone" viewBox="0 0 24 24"><path d="M3 15v-4c5-5 13-5 18 0v4l-5-1v-4M8 10v4l-5 1"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4Zm4 5h8m-8 4h5"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+<symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+<symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7M15 5l4 4M10 14l-1 4 4-1L22 8l-4-4Z"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 10.5v5M12 7.7h.01"/></symbol>
+</svg>
+<main>
+<header><div class="header-start"><button id="toggle-history" aria-label="Toggle chats" title="Chats (C or Alt+H)" aria-expanded="false" aria-controls="chat-history"><svg><use href="#i-sidebar"/></svg></button><img class="brand-mark" src="static/openassistant-mark.svg" alt=""><h1>OpenAssistant</h1><button id="shortcuts-help" class="icon-only" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><svg aria-hidden="true"><use href="#i-info"/></svg></button></div><span id="connection" role="status">Connecting…</span></header>
+<div class="workspace">
+<nav id="chat-history" aria-label="Saved conversations" hidden>
+<div class="history-heading"><h2>Chats</h2><button id="close-history" class="icon-only" aria-label="Close chat history"><svg><use href="#i-close"/></svg></button></div>
+<div class="history-actions"><div class="history-search"><svg aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="search-chats">Search chat titles</label><input id="search-chats" type="search" placeholder="Search chats" maxlength="200" disabled></div><button id="new-chat" aria-label="New chat" title="New chat" disabled><svg aria-hidden="true"><use href="#i-compose"/></svg></button></div>
+<div class="history-heading history-recents"><h3>Recent conversations</h3><button id="refresh-chats" disabled aria-label="Refresh chats" title="Refresh chats"><svg><use href="#i-refresh"/></svg></button></div>
+<ol id="saved-chats" aria-label="Recent chats"></ol>
+<button id="older-chats" hidden>Load more</button>
+<p id="history-status" role="status"></p>
+<div id="resize-history" role="separator" aria-label="Resize chats sidebar" aria-orientation="vertical" aria-valuemin="200" aria-valuenow="248" tabindex="0" title="Drag or use arrow keys to resize"></div>
+</nav>
+<div class="workspace-content"><div class="layout">
+<section class="stage" aria-label="OpenAssistant participant">
+<div class="stage-content"><img class="openassistant-avatar" src="static/openassistant-mark.svg" alt="" width="40" height="40"><div class="stage-conversation">
+<div class="stage-top"><span class="state-dot"></span><span id="status" role="status">Connecting…</span></div>
+<div class="portrait"><h2>Start a conversation</h2><p id="hint">Connect to use voice or text.</p>
+<form id="login" hidden><div id="key-fields" hidden><label for="token">Access key</label><input id="token" type="password" autocomplete="off" maxlength="256"></div><button id="join" disabled>Connect</button></form></div>
+<div id="live-response" hidden>
+<div id="live-caption" hidden aria-live="off"></div>
+<section id="task-panel" hidden aria-label="OpenAssistant's tasks">
+<div class="task-heading"><span id="task-state" role="status">Thinking</span></div>
+<p id="task-request" class="sr-only"></p><p id="task-detail" class="sr-only"></p>
+<div class="task-meta"><span id="task-time"></span><details id="task-activity" hidden><summary>Details <span id="activity-count"></span></summary><ol id="activity-list" aria-label="Tool activity"></ol></details></div>
+</section></div></div></div>
+<div class="participant-name">OpenAssistant</div>
+<div id="in-call" hidden><div class="you"><span class="avatar">Y</span><span id="name">You</span><span id="mic-state">Microphone off</span></div></div>
+</section>
+<aside id="conversation" hidden aria-label="Conversation">
+<div class="panel-heading"><h2>Conversation</h2><button id="close-panel" class="icon-only" aria-label="Close conversation"><svg><use href="#i-close"/></svg></button></div>
+<div id="transcript" role="log" aria-label="Conversation transcript"></div>
+</aside></div>
+<div class="compose-area">
+<ol id="text-queue" aria-label="Queued messages" aria-live="polite" hidden></ol>
+<form id="composer"><label class="sr-only" for="prompt">Message OpenAssistant</label><textarea id="prompt" placeholder="Message OpenAssistant…" maxlength="8000" rows="1" disabled required></textarea><button id="send" disabled aria-label="Send message">↑</button></form>
+</div>
+<footer>
+<div class="call-details"><span id="elapsed">00:00</span><span>Conversation</span></div>
+<div class="controls">
+<button id="mic" disabled aria-pressed="false"><svg><use href="#i-mic"/></svg><span id="mic-label">Mic off</span></button>
+<button id="sound" disabled aria-pressed="false" title="Mute replies; the task keeps running"><svg><use href="#i-sound"/></svg><span id="sound-label">Sound on</span></button>
+<button id="interrupt" disabled title="Stop the agent turn and its voice; completed actions are not undone"><svg><use href="#i-stop"/></svg><span>Stop task</span></button>
+<button id="leave" disabled><svg><use href="#i-phone"/></svg><span>Disconnect</span></button>
+</div>
+<button id="toggle-panel" aria-label="Toggle conversation" title="Conversation (Alt+C)" aria-expanded="false" aria-controls="conversation"><svg><use href="#i-chat"/></svg><span>Conversation</span></button>
+</footer><p id="notice" role="status"></p></div></div>
+</main><dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-only" aria-label="Close keyboard shortcuts"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><p class="shortcuts-note">Option on Mac · Alt on Windows</p><dl class="shortcuts-list"><div><dt>Open a numbered chat</dt><dd>Option / Alt + 1–9</dd></div><div><dt>Browse chats</dt><dd>C or Option / Alt + H, then ↑ / ↓ and Enter</dd></div><div><dt>Open conversation</dt><dd>Option / Alt + C</dd></div><div><dt>Close open panel or dialog</dt><dd>Option / Alt + W</dd></div><div><dt>Focus message box</dt><dd>Enter, when no control is focused</dd></div><div><dt>Send message</dt><dd>Enter</dd></div><div><dt>New line</dt><dd>Shift + Enter</dd></div><div><dt>Recall messages</dt><dd>↑ / ↓ in the message box</dd></div><div><dt>Send guidance now</dt><dd>⌘ / Ctrl + Enter in the message box</dd></div></dl></dialog><dialog id="image-viewer" aria-label="Image preview"><button id="close-image" aria-label="Close image preview">Close</button><img id="image-full" alt=""></dialog><script src="static/history.js"></script></body></html>

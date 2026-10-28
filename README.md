@@ -1,30 +1,60 @@
-# OpenAssistant Chat
-- Can be used with any LLama GGUF model variants.
-- Best one found so far: [Mistral-7B-OpenOrca-GGUF](https://huggingface.co/TheBloke/Mistral-7B-OpenOrca-GGUF)
+# OpenAssistant
 
-Pre-requisite:
-- User will require Python3.11
+OpenAssistant started in 2023 as a desktop experiment in running open models locally. The original app combined GGUF language models, voice and an early LLaVA image experiment. You can still explore it in the [v1_2023 release](https://github.com/has-c/openassistant/releases/tag/v1_2023).
 
-Dist download link: [Download link](https://drive.google.com/file/d/1lgGzSyj4_lE5f3nebiHaMa8d310HaCqT/view?usp=sharing)
+The new preview revisits that idea with today's tools: a browser interface for text and voice, a Pi agent that can use tools and MCP, and a choice of models through Pi—including local models served with vLLM.
 
-Change the path in `run.sh` to your local path.
+![OpenAssistant browser preview on desktop](docs/images/openassistant-desktop.png)
 
-![image](https://github.com/has-c/zima/assets/29789857/b2c1b893-d50d-4683-880a-ab7b49117b14)
+*The current preview, showing a response from a local model.*
 
-# Compile the app from source
+## From 2023 to now
 
-```bash
-python3 setup.py py2app
+| | [2023 release](https://github.com/has-c/openassistant/releases/tag/v1_2023) | Current preview |
+| --- | --- | --- |
+| Interface | Desktop app | Browser-based text and voice |
+| Models | Local GGUF models | Models configured in Pi, including local vLLM providers |
+| Voice | Early voice chat | Whisper transcription and Kokoro speech, run as separate services |
+| Capabilities | Chat and experimental LLaVA image interpretation | Pi's read, shell, edit and write tools, plus configured MCP servers |
+| History | Original desktop experience | Saved conversations, with SQLite and Pi session files |
+
+The preview is experimental. It does not import conversations from the original release. Model and tool capabilities depend on your Pi configuration.
+
+<img src="docs/images/openassistant-mobile.png" alt="OpenAssistant browser preview on mobile" width="340">
+
+## Try the preview
+
+You'll need Python 3.12, Node.js, a compatible Pi CLI, Docker, and a model configured in Pi. Install the app:
+
+```sh
+python -m pip install ./openassistant-live
+pi --version
 ```
 
-# Beta Features
+Start the speech services:
 
-## 1. Ability to interpret and process images
-- Multi-modal model functionality - adding [LLava](https://llava-vl.github.io) 
-- Image interpreted by LLava v1 functionality and further text QA performed by a LLama finetune
-- Currently requires user to download llama_cpp (waiting for Python bindings to come along for adding a dist/production version)
+```sh
+docker compose -f speech/compose.yaml up -d
+docker compose -f speech/whisper/compose.yaml up -d --build
+```
 
-### Example usage:
+Create an access file containing a JSON object that maps names to random access keys of at least 32 characters. Give the file mode `0600`, then start the app:
 
-![Screenshot 2023-10-22 at 7 54 02 pm](https://github.com/has-c/openassistant/assets/29789857/7c59cb67-cf1d-4963-944e-1dcc9de39313)
-![example_response](https://github.com/has-c/openassistant/assets/29789857/9d31ba6b-4fc8-4a69-916b-b14d402e27f2)
+```sh
+python -m openassistant.live --access-file /path/to/access.json \
+  --workspace /path/to/workspace \
+  --speech-endpoint http://127.0.0.1:8880/v1/audio/speech \
+  --whisper-endpoint http://127.0.0.1:9000/transcribe
+```
+
+Open `http://localhost:8766`. The app uses Pi's default provider and model; use `--pi-provider` and `--model` to select others. For local vLLM, configure a Pi provider for its OpenAI-compatible Chat Completions endpoint and served model.
+
+See [preview setup](MIGRATION.md) for remote access, history, and service details.
+
+## Tool access
+
+Pi's standard tools, configured MCP servers and extensions are enabled for conversations. They run with the app user's permissions, without a per-action approval prompt or an additional sandbox. Use a dedicated account and workspace, and restrict access to people you trust. No MCP server is bundled. Title generation runs separately with tools disabled.
+
+## The original app
+
+The 2023 release and its [source](https://github.com/has-c/openassistant/tree/v1_2023) remain available. It used local GGUF models and included an experimental LLaVA image workflow.
