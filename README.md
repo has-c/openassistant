@@ -1,6 +1,6 @@
 # OpenAssistant
 
-[![Watch the OpenAssistant launch film](docs/video/openassistant-poster.jpg)](docs/video/openassistant.mp4)
+https://github.com/user-attachments/assets/b2cf4e93-fdbc-4d85-9818-dff4e31c4c76
 
 *Watch the 24-second preview. Music: [Sascha Ende, ende.app](https://ende.app/en) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)); adapted for this film.*
 
