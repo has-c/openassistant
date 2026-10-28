@@ -235,6 +235,7 @@ function historyEvent(data) {
       // A background chat's unsent queue never runs merely because it was reopened.
       queuePaused = textQueue.length > 0;
     }
+    clearRequests();
     conversationId = data.id; historyReady = true; observing = !!data.observer;
     if (observing) { queuePaused = true; microphone.disable(); }
     try { localStorage.setItem('openassistant-conversation', data.id); } catch { /* Storage optional. */ }
@@ -259,6 +260,7 @@ function historyEvent(data) {
       : data.truncated ? 'Showing recent messages.' : '';
     if (data.task) {
       const task = data.task;
+      if (!observing) for (const request of task.pending_ui || []) renderRequest(request, false);
       taskStarted = task.started ? task.started * 1000 : Date.now();
       $('task-time').textContent = `${Math.max(0, Math.floor((Date.now() - taskStarted) / 1000))}s elapsed`;
       $('task-request').textContent = task.request || '';

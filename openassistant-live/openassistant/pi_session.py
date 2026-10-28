@@ -17,12 +17,14 @@ class Session:
         client_factory=PiClient,
         message_event=None,
         extra_instructions="",
+        ui_handler=None,
     ):
         self.config = config
         self.saved_thread = saved_thread
         self.progress = progress
         self.message_event = message_event
         self.extra_instructions = extra_instructions
+        self.ui_handler = ui_handler
         self.client_factory = client_factory
         self.client = None
         self.lock = Lock()
@@ -46,6 +48,7 @@ class Session:
             model=getattr(self.config, "model", None),
             session=str(path) if path else None,
             session_dir=str(directory),
+            ui_handler=self.ui_handler,
             extra_args=[
                 "--no-skills",
                 "--append-system-prompt",

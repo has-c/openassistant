@@ -46,6 +46,7 @@
 <div class="panel-heading"><h2>Conversation</h2><button id="close-panel" class="icon-only" aria-label="Close conversation"><svg><use href="#i-close"/></svg></button></div>
 <div id="transcript" role="log" aria-label="Conversation transcript"></div>
 </aside></div>
+<section id="input-requests" aria-label="Requests needing your input" aria-live="polite" hidden></section>
 <div class="compose-area">
 <ol id="text-queue" aria-label="Queued messages" aria-live="polite" hidden></ol>
 <form id="composer"><label class="sr-only" for="prompt">Message OpenAssistant</label><textarea id="prompt" placeholder="Message OpenAssistant…" maxlength="8000" rows="1" disabled required></textarea><button id="send" disabled aria-label="Send message">↑</button></form>
@@ -54,7 +55,7 @@
 <div class="call-details"><span id="elapsed">00:00</span><span>Conversation</span></div>
 <div class="controls">
 <button id="mic" disabled aria-pressed="false"><svg><use href="#i-mic"/></svg><span id="mic-label">Mic off</span></button>
-<button id="sound" disabled aria-pressed="false" title="Mute replies; the task keeps running"><svg><use href="#i-sound"/></svg><span id="sound-label">Sound on</span></button>
+<div class="sound-control"><button id="sound" disabled aria-haspopup="true" aria-expanded="false" aria-controls="sound-menu" title="Sound options"><svg><use href="#i-sound"/></svg><span id="sound-label">Voice &amp; alerts</span></button><div id="sound-menu" role="group" aria-label="Sound options" hidden><button type="button" data-sound="off">Off</button><button type="button" data-sound="alerts">Alerts only</button><button type="button" data-sound="voice">Voice &amp; alerts</button></div></div>
 <button id="interrupt" disabled title="Stop the agent turn and its voice; completed actions are not undone"><svg><use href="#i-stop"/></svg><span>Stop task</span></button>
 <button id="leave" disabled><svg><use href="#i-phone"/></svg><span>Disconnect</span></button>
 </div>

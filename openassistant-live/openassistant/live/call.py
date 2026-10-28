@@ -33,6 +33,7 @@ class Call:
         self.owner = None
         self.principal = None
         self.snapshot = {}
+        self.pending_ui = {}
 
     def remember(self, kind, data):
         if kind == "start":
@@ -144,12 +145,74 @@ class Call:
                 *(forward(peer) for peer in tuple(self.peers)), return_exceptions=True
             )
 
+    async def request_ui(self, request):
+        method = request.get("method")
+        if method not in {"confirm", "input", "select", "editor"}:
+            return None
+        if len(self.pending_ui) >= 4:
+            return None
+        token = uuid.uuid4().hex
+        options = request.get("options", [])
+        if method == "select" and (
+            not isinstance(options, list)
+            or len(options) > 50
+            or any(not isinstance(x, str) or len(x) > 500 for x in options)
+        ):
+            return None
+        item = {
+            "id": token,
+            "method": method,
+            "title": str(request.get("title", "Input requested"))[:500],
+            "message": str(request.get("message", ""))[:4000],
+            "options": options if method == "select" else [],
+            "placeholder": str(request.get("placeholder", ""))[:500],
+            "prefill": str(request.get("prefill", ""))[:8000],
+        }
+        future = asyncio.get_running_loop().create_future()
+        self.pending_ui[token] = (future, item)
+        self.snapshot["pending_ui"] = [entry[1] for entry in self.pending_ui.values()]
+        try:
+            await self.send("input_request", request=item)
+            timeout = request.get("timeout")
+            seconds = (
+                min(120, max(0.1, timeout / 1000)) if isinstance(timeout, (int, float)) else 120
+            )
+            async with asyncio.timeout(seconds):
+                return await future
+        except TimeoutError:
+            return None
+        finally:
+            self.pending_ui.pop(token, None)
+            self.snapshot["pending_ui"] = [entry[1] for entry in self.pending_ui.values()]
+            await self.send("input_closed", id=token)
+
+    def answer_ui(self, token, value):
+        entry = self.pending_ui.get(token) if isinstance(token, str) else None
+        if not entry or entry[0].done():
+            return False
+        future, item = entry
+        method = item["method"]
+        if value is not None:
+            if method == "confirm" and not isinstance(value, bool):
+                return False
+            if method in {"input", "editor", "select"} and (
+                not isinstance(value, str) or len(value) > 8000
+            ):
+                return False
+            if method == "select" and value not in item["options"]:
+                return False
+        future.set_result(value)
+        return True
+
     def saved_thread(self, thread, prompt):
         self.thread = thread
         if self.history and self.conversation:
             self.history.saved(self.conversation, thread, prompt)
 
     async def stop(self):
+        for future, _ in list(self.pending_ui.values()):
+            if not future.done():
+                future.set_result(None)
         if self.task and not self.task.done():
             # Cancel the consumer before its finally block closes the agent.
             # Otherwise the reader can report the expected shutdown as a failure.
@@ -229,6 +292,7 @@ class Call:
                     lambda thread: self.saved_thread(thread, prompt),
                     lambda value: bridge(events.put(("progress", value))),
                     message_event=lambda kind, value: bridge(events.put((kind, value))),
+                    ui_handler=lambda request: bridge(self.request_ui(request)),
                     extra_instructions=(
                         "\nThis turn is in the OpenAssistant voice app. "
                         "Replies appear here and are spoken automatically. Use short natural "

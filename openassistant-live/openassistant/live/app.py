@@ -291,10 +291,24 @@ def create_app(config):
                         busy=bool(running),
                         observer=observer,
                         task=(
-                            dict(running.snapshot) if running else history.task_status(chat["id"])
+                            {
+                                k: v
+                                for k, v in running.snapshot.items()
+                                if k != "pending_ui" or not observer
+                            }
+                            if running
+                            else history.task_status(chat["id"])
                         ),
                         **transcript,
                     )
+                elif kind == "input_answer":
+                    if (
+                        "value" in data
+                        and data.get("conversation") == call.conversation
+                        and data.get("turn") == call.serial
+                        and (active.get(call.conversation) is call or (not history and call.task))
+                    ):
+                        call.answer_ui(data.get("id"), data.get("value"))
                 elif kind == "stop":
                     if active.get(call.conversation) not in (None, call):
                         await call.send("notice", text="This task belongs to another open call.")

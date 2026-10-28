@@ -126,12 +126,6 @@ async def test_disconnect_keeps_task_and_same_browser_reclaims_controls(config, 
         await returned.close()
 
 
-
-
-
-
-
-
 def test_restart_marks_unfinished_status_interrupted_without_replaying(config):
     history = Conversations(config.history_dir, config.workspace)
     chat = history.create()["id"]
@@ -197,8 +191,6 @@ async def test_one_socket_switches_between_two_tasks_and_only_stops_selected(con
         await event(ws, "stopped")
         assert cancelled == {"A", "B"}
         await ws.close()
-
-
 
 
 @pytest.mark.asyncio
@@ -334,3 +326,82 @@ async def test_title_uses_configured_pi_without_tools(config, monkeypatch):
     assert seen["provider"] == "local" and seen["model"] == "example"
     assert seen["no_session"] is True
     assert set(seen["extra_args"]) == {"--no-tools", "--no-mcp", "--no-extensions", "--no-skills"}
+
+
+@pytest.mark.asyncio
+async def test_input_request_owner_reconnect_and_observer_cannot_answer(config, monkeypatch):
+    answers = []
+
+    async def run(self, prompt, recording):
+        self.snapshot = {"state": "working", "request": prompt, "activities": [], "responses": []}
+        answers.append(
+            await self.request_ui(
+                {"method": "confirm", "title": "Continue?", "message": "Review this step"}
+            )
+        )
+        await self.send("task", state="finished", text="Finished")
+
+    monkeypatch.setattr(live.Call, "run", run)
+    monkeypatch.setattr(
+        Conversations, "transcript", lambda *args: {"messages": [], "truncated": False}
+    )
+    identity = str(uuid4())
+    async with TestClient(TestServer(live.create_app(config))) as client:
+        owner = await connect(client, identity)
+        await owner.send_json({"type": "new_conversation"})
+        chat = (await event(owner, "conversation"))["id"]
+        await owner.send_json({"type": "prompt", "text": "Do work"})
+        request = await event(owner, "input_request")
+        reqid, turn = request["request"]["id"], request["turn"]
+        await owner.close()
+        observer = await connect(client, str(uuid4()))
+        await observer.send_json({"type": "open_conversation", "id": chat})
+        observed = await event(observer, "conversation")
+        assert observed["observer"] and "pending_ui" not in observed["task"]
+        await observer.send_json(
+            {"type": "input_answer", "conversation": chat, "turn": turn, "id": reqid, "value": True}
+        )
+        await asyncio.sleep(0.05)
+        assert answers == []
+        await observer.close()
+        owner = await connect(client, identity)
+        await owner.send_json({"type": "open_conversation", "id": chat})
+        restored = await event(owner, "conversation")
+        assert restored["task"]["pending_ui"][0]["id"] == reqid
+        await owner.send_json(
+            {
+                "type": "input_answer",
+                "conversation": chat,
+                "turn": turn + 1,
+                "id": reqid,
+                "value": True,
+            }
+        )
+        await asyncio.sleep(0.05)
+        assert answers == []
+        await owner.send_json(
+            {"type": "input_answer", "conversation": chat, "turn": turn, "id": reqid, "value": True}
+        )
+        await event(owner, "turn_ready")
+        assert answers == [True]
+        await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_request_validates_answer_and_stop_cancels(config):
+    call = live.Call(None, config)
+    call.snapshot = {}
+    task = asyncio.create_task(
+        call.request_ui({"method": "select", "title": "Pick", "options": ["one", "two"]})
+    )
+    await asyncio.sleep(0)
+    token = next(iter(call.pending_ui))
+    assert not call.answer_ui(token, "other")
+    assert not task.done()
+    assert call.answer_ui(token, "two")
+    assert await task == "two"
+    task = asyncio.create_task(call.request_ui({"method": "confirm", "title": "Continue?"}))
+    await asyncio.sleep(0)
+    await call.stop()
+    assert await task is None
+    assert not call.pending_ui

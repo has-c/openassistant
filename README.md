@@ -53,7 +53,7 @@ See [preview setup](MIGRATION.md) for remote access, history, and service detail
 
 ## Tool access
 
-Pi's standard tools, configured MCP servers and extensions are enabled for conversations. They run with the app user's permissions, without a per-action approval prompt or an additional sandbox. Use a dedicated account and workspace, and restrict access to people you trust. No MCP server is bundled. Title generation runs separately with tools disabled.
+Pi's standard tools, configured MCP servers and extensions are enabled for conversations. They run with the app user's permissions, without a per-action approval prompt or an additional sandbox. Use a dedicated account and workspace, and restrict access to people you trust. No MCP server is bundled. Title generation runs separately with tools disabled. Configured Pi extensions can request confirmation or input in the app; a chime calls attention to the request. Sound options let you choose voice and alerts, alerts only, or silence. These extension requests do not add approval prompts to Pi’s standard tools.
 
 ## The original app
 
