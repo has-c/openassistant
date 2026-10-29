@@ -1,8 +1,8 @@
 # OpenAssistant
 
-https://github.com/user-attachments/assets/c8915bbb-d676-4ade-bc5f-718e8dbeaff7
+https://github.com/user-attachments/assets/3ec0d29c-621d-43c7-8237-1663c46d690e
 
-*Watch the 50-second preview. Music: [Sascha Ende, ende.app](https://ende.app/en) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)); adapted for this film.*
+*Watch the one-minute preview. Music: [Sascha Ende, ende.app](https://ende.app/en) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)); adapted for this film.*
 
 OpenAssistant started in 2023 as a desktop experiment in running open models locally. The original app combined GGUF language models, voice and an early LLaVA image experiment. You can still explore it in the [v1_2023 release](https://github.com/has-c/openassistant/releases/tag/v1_2023).
 
