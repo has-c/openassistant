@@ -9,7 +9,7 @@ description = "A browser voice and text interface powered by Pi."
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9,<4",
-    "pi-agent-python-sdk==0.2.1",
+    "pi-agent-python-sdk==0.2.6",
     # Upstream's PyAV 19 compatibility fix is not in a PyPI release yet.
     "faster-whisper @ https://github.com/SYSTRAN/faster-whisper/archive/2ce7f9d7a9fbe315a5804a33bf7224d42e101174.tar.gz#sha256=281e65ba4df9bd2825804a3dcee0dfb8a1bd90f2ebae659c2c80fc220c676b6e",
     "av>=19.0.2,<20", # 19.0.2 fixes the custom channel-layout double free.
