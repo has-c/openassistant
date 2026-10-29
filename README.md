@@ -61,4 +61,4 @@ Pi's standard tools, configured MCP servers and extensions are enabled for conve
 
 ## The original app
 
-The 2023 release and its [source](https://github.com/has-c/openassistant/tree/v1_2023) remain available. It used local GGUF models and included an experimental LLaVA image workflow.
+The original desktop scripts and packaging are in [legacy/](legacy/). The [2023 release](https://github.com/has-c/openassistant/releases/tag/v1_2023) preserves the original version. It used local GGUF models and included an experimental LLaVA image workflow.

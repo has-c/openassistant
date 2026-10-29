@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: pip
     directories:
+      - /legacy
       - /openassistant-live
       - /speech/whisper
     schedule:
