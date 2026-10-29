@@ -5,7 +5,7 @@ from pathlib import Path
 
 wanted = {"certifi", "llama-cpp-python", "pillow"}
 requirements = []
-for raw in Path("requirements.txt").read_text().splitlines():
+for raw in Path("legacy/requirements.txt").read_text().splitlines():
     line = raw.strip()
     if not line or line.startswith("#"):
         continue

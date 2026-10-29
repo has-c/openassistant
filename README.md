@@ -2,7 +2,7 @@
 
 https://github.com/user-attachments/assets/68b13f4f-a961-443c-86e5-6a94db5357da
 
-*Watch the 44-second preview. Music: [Sascha Ende, ende.app](https://ende.app/en) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)); adapted for this film.*
+*Watch the 50-second preview. Music: [Sascha Ende, ende.app](https://ende.app/en) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)); adapted for this film.*
 
 OpenAssistant started in 2023 as a desktop experiment in running open models locally. The original app combined GGUF language models, voice and an early LLaVA image experiment. You can still explore it in the [v1_2023 release](https://github.com/has-c/openassistant/releases/tag/v1_2023).
 
@@ -61,4 +61,4 @@ Pi's standard tools, configured MCP servers and extensions are enabled for conve
 
 ## The original app
 
-The 2023 release and its [source](https://github.com/has-c/openassistant/tree/v1_2023) remain available. It used local GGUF models and included an experimental LLaVA image workflow.
+The original desktop scripts and packaging are in [legacy/](legacy/). The [2023 release](https://github.com/has-c/openassistant/releases/tag/v1_2023) preserves the original version. It used local GGUF models and included an experimental LLaVA image workflow.
