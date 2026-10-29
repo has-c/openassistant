@@ -1,2 +1,2 @@
-aiohttp>=3.9,<4
+aiohttp>=3.14.5,<4
 faster-whisper @ https://github.com/SYSTRAN/faster-whisper/archive/2ce7f9d7a9fbe315a5804a33bf7224d42e101174.tar.gz#sha256=281e65ba4df9bd2825804a3dcee0dfb8a1bd90f2ebae659c2c80fc220c676b6e
