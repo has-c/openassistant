@@ -47,5 +47,5 @@ jobs:
         run: python -m pip install -r speech/whisper/requirements.txt
       - name: Validate speech configurations
         run: |
-          docker compose -f speech/compose.yaml config -q
+          docker compose -f speech/kokoro/compose.yaml config -q
           docker compose -f speech/whisper/compose.yaml config -q
