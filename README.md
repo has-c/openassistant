@@ -1,6 +1,6 @@
 # OpenAssistant
 
-https://github.com/user-attachments/assets/682c539c-f9e3-4465-86a3-20246aa5db70
+https://github.com/user-attachments/assets/f5d5edfe-4d04-4554-98ee-175b91a0764c
 
 *Watch the 45-second preview. Music: [Sascha Ende, ende.app](https://ende.app/en) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)); adapted for this film.*
 
