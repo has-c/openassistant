@@ -2,6 +2,6 @@
 # The current browser preview uses openassistant-live/pyproject.toml.
 certifi>=2026.10.18
 llama-cpp-python==0.1.83
-openai-whisper==20230314
-PyAudio==0.2.13
+openai-whisper==20250625
+PyAudio==0.2.14
 Pillow>=10
