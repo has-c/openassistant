@@ -16,7 +16,7 @@ updates:
     open-pull-requests-limit: 3
 
   - package-ecosystem: docker-compose
-    directory: /speech
+    directory: /speech/kokoro
     schedule:
       interval: weekly
     open-pull-requests-limit: 3

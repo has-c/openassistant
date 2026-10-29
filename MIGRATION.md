@@ -11,7 +11,7 @@ pi --version
 
 Configure a provider and model in Pi. For local vLLM, the Pi provider must use the OpenAI-compatible Chat Completions endpoint, a served model name and the appropriate model-specific settings. Supply the chosen provider with `--pi-provider` and model with `--model`; omit them to use Pi's defaults.
 
-Start Kokoro with `docker compose -f speech/compose.yaml up -d`. Start Whisper with `docker compose -f speech/whisper/compose.yaml up -d --build`. The first start downloads the Whisper model into a Docker volume. Both services bind to loopback and have no authentication.
+Start Kokoro with `docker compose -f speech/kokoro/compose.yaml up -d`. Start Whisper with `docker compose -f speech/whisper/compose.yaml up -d --build`. The first start downloads the Whisper model into a Docker volume. Both services bind to loopback and have no authentication.
 
 Create a private JSON file mapping user names to random access keys of at least 32 characters, with mode 0600. Then start the app:
 

@@ -38,7 +38,7 @@ pi --version
 Start the speech services:
 
 ```sh
-docker compose -f speech/compose.yaml up -d
+docker compose -f speech/kokoro/compose.yaml up -d
 docker compose -f speech/whisper/compose.yaml up -d --build
 ```
 
