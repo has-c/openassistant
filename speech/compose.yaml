@@ -1,6 +1,6 @@
 services:
   kokoro:
-    image: ghcr.io/remsky/kokoro-fastapi-cpu@sha256:7f9a256919eff7a84e9a77b757de0f3fe95c48fcf4fbe1e008deacbc7d9f2985
+    image: ghcr.io/remsky/kokoro-fastapi-cpu@sha256:03334df0f6de21df0138d2896f8211c20d1d513bae865e14a695b17d647bc961
     container_name: openassistant-kokoro
     restart: unless-stopped
     ports:
