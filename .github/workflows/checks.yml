@@ -30,8 +30,8 @@ jobs:
       - name: Check queue interaction
         run: python tests/browser_text_queue.py
 
-  legacy-and-compose:
-    name: Legacy imports and compose configuration
+  speech:
+    name: Speech dependency and compose configuration
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -39,10 +39,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install legacy dependencies under test
-        run: python .github/scripts/install_legacy_dependencies.py
-      - name: Check desktop imports
-        run: python -c 'from llama_cpp import ChatCompletionMessage, Llama; from PIL import Image, ImageTk; import certifi'
       - name: Check Whisper service dependency resolution
         run: python -m pip install -r speech/whisper/requirements.txt
       - name: Validate speech configurations
