@@ -1,7 +1,7 @@
 # Direct dependencies for the original desktop scripts.
 # The current browser preview uses openassistant-live/pyproject.toml.
 certifi>=2026.10.23
-llama-cpp-python==0.1.83
+llama-cpp-python==0.3.36
 openai-whisper==20250625
 PyAudio==0.2.14
 Pillow>=13.0.0
