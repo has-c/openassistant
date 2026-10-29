@@ -248,6 +248,8 @@ class Call:
         async def speak():
             nonlocal first_audio
             while (text := await voice.get()) is not None:
+                if not text.strip():
+                    continue
                 if not self.ws or self.ws.closed:
                     continue
                 listener = self.ws

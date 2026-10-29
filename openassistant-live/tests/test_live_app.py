@@ -137,6 +137,7 @@ async def test_origin_auth_exclusive_connection_and_release(client):
 
 async def test_stream_audio_and_separate_session_history(client, monkeypatch):
     threads = []
+    spoken = []
 
     class FakeSession:
         def __init__(self, config, saved, progress, message_event, **kwargs):
@@ -149,6 +150,7 @@ async def test_stream_audio_and_separate_session_history(client, monkeypatch):
             self.events(
                 "activity", {"id": "tool1", "label": "Calendar search", "state": "returned"}
             )
+            self.events("delta", {"itemId": "answer", "delta": "\n\n"})
             self.events("delta", {"itemId": "answer", "delta": "Hello there. "})
             self.events("item/completed", {"id": "answer", "text": "Hello there. "})
             return "Hello there. "
@@ -157,6 +159,7 @@ async def test_stream_audio_and_separate_session_history(client, monkeypatch):
             pass
 
     async def speech(self, path, text):
+        spoken.append(text)
         path.write_bytes(b"OggS-test")
 
     monkeypatch.setattr(live_call, "Session", FakeSession)
@@ -182,6 +185,7 @@ async def test_stream_audio_and_separate_session_history(client, monkeypatch):
         async with asyncio.timeout(5):
             while (await ws.receive_json())["type"] != "turn_ready":
                 pass
+    assert spoken == ["Hello there. ", "Hello there. "]
     assert threads == [None, "private-thread"]
     await ws.close()
 
