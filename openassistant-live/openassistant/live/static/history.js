@@ -12,6 +12,7 @@ let historySearchTimer;
 let historyRequest = 0, historyLimit = 50;
 let effortLevels = [];
 let effectiveModel = null;
+let modelErrorText = null;
 function closeEffort() { $('effort-menu').hidden = true; $('effort-trigger').setAttribute('aria-expanded', 'false'); }
 function renderEffort(data) {
   effortLevels = Array.isArray(data.levels) ? data.levels : [];
@@ -38,8 +39,10 @@ function renderModelOptions(data) {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
       button.onclick = () => send({type, conversation:conversationId, model:null}); options.append(button);
     }
-    notice(data.text); return;
+    modelErrorText = data.text; notice(data.text); return;
   }
+  if (modelErrorText && $('notice').textContent === modelErrorText) notice('');
+  modelErrorText = null;
   const selected = data.selected || '';
   effectiveModel = data.effective;
   const current = data.models.find(m => m.id === effectiveModel)?.label || 'Default';
@@ -385,9 +388,9 @@ function historyEvent(data) {
       taskStarted = task.started ? task.started * 1000 : Date.now();
       $('task-time').textContent = `${Math.max(0, Math.floor((Date.now() - taskStarted) / 1000))}s elapsed`;
       $('task-request').textContent = task.request || '';
+      renderPlan({steps:task.steps || []});
       taskState(task.state || 'working', task.detail || 'Working');
       $('status').textContent = data.busy ? ({approval:'Needs approval', input:'Needs your answer'}[task.state] || 'Working') : 'Ready';
-      renderPlan({steps:task.steps || []});
       for (const item of task.activities || []) activity(item);
       // Native history owns completed replies. The snapshot fills in the active turn only.
       if (data.busy) {
@@ -400,7 +403,7 @@ function historyEvent(data) {
     if (innerWidth <= 1100) {
       $('chat-history').hidden = true; $('toggle-history').setAttribute('aria-expanded', 'false');
     }
-    controls(true); refreshHistory();
+    controls(true); refreshHistory(0, true);
     if (!data.busy && data.task?.state === 'finished') dispatchQueued();
     return true;
   }

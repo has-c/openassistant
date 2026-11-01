@@ -225,7 +225,7 @@ setInterval(() => {
 }, 1000);
 const clips = [], messages = new Map();
 const notice = text => $('notice').textContent = text;
-const audioNotices = new Set(['Click Play audio to allow voice playback.',
+const audioNotices = new Set(['Audio unavailable.', 'Click Play audio to allow voice playback.',
   'Select Voice & alerts to allow voice playback.',
   'This browser could not play the audio. Captions remain available.',
   'Audio queue full; following captions.']);
@@ -387,16 +387,7 @@ function clearImages() {
   imageUrls.clear(); imagePending.clear();
   if ($('image-viewer').open) $('image-viewer').close();
 }
-function showImages(body, text, images) {
-  body.replaceChildren();
-  const pattern = /!?\[([^\]\n]{0,300})\]\((?:<([^>\n]+)>|(\/[^)\n]+))\)/g;
-  let previous = 0;
-  const shown = new Set();
-  for (const match of text.matchAll(pattern)) {
-    const image = images.find(entry => entry.path === (match[2] || match[3]));
-    if (!image) continue;
-    shown.add(image.id);
-    body.append(document.createTextNode(text.slice(previous, match.index)));
+function imageButton(image) {
     const button = document.createElement('button');
     button.className = 'message-image'; button.dataset.imageId = image.id;
     button.setAttribute('aria-label', `Enlarge ${image.alt}`);
@@ -411,13 +402,24 @@ function showImages(body, text, images) {
       $('image-full').src = thumbnail.src; $('image-full').alt = thumbnail.alt;
       $('image-viewer').showModal();
     };
-    body.append(button); previous = match.index + match[0].length;
+    return button;
+}
+function showImages(body, text, images) {
+  body.replaceChildren();
+  const pattern = /!?\[([^\]\n]{0,300})\]\((?:<([^>\n]+)>|(\/[^)\n]+))\)/g;
+  let previous = 0;
+  const shown = new Set();
+  for (const match of text.matchAll(pattern)) {
+    const image = images.find(entry => entry.path === (match[2] || match[3]));
+    if (!image) continue;
+    shown.add(image.id);
+    body.append(document.createTextNode(text.slice(previous, match.index)), imageButton(image));
+    previous = match.index + match[0].length;
   }
   body.append(document.createTextNode(text.slice(previous)));
   // Native image inputs have no Markdown link in the user's text.
   for (const image of images.filter(image => !shown.has(image.id))) {
-    const holder = document.createElement('div');
-    showImages(holder, `![${image.alt}](${image.path})`, [image]); body.append(holder);
+    body.append(imageButton(image));
   }
 }
 $('close-image').onclick = () => $('image-viewer').close();
@@ -584,7 +586,7 @@ function connect() {
       const wasObserving = observing;
       busy = false; observing = false; controls(true);
       if (wasObserving) send({type:'open_conversation', id:conversationId});
-      refreshHistory(); dispatchQueued();
+      refreshHistory(0, true); dispatchQueued();
     }
   };
 }
@@ -678,7 +680,7 @@ function renderSoundMode() {
 }
 function showSoundMenu(open) { $('sound-menu').hidden = !open; $('sound').setAttribute('aria-expanded', String(open)); }
 renderSoundMode();
-$('sound').onclick = () => { enableAlerts(); showSoundMenu($('sound-menu').hidden); };
+$('sound').onclick = () => { enableAlerts(); clearAudioNotice(); showSoundMenu($('sound-menu').hidden); };
 $('sound-menu').onclick = async event => {
   const option = event.target.closest('[data-sound]'); if (!option) return;
   soundMode = option.dataset.sound;

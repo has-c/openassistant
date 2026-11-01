@@ -12,13 +12,13 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from openassistant.live import app as live
 from openassistant.live.history import Conversations
-from openassistant.live.images import save_uploads
+from openassistant.live.images import save_uploads, validate_upload
 from openassistant.models import model_key, model_options
 from openassistant.plan import plan_steps
 
 TEXT = '["one","same-id"]'
 VISION = '["two","same-id"]'
-PNG = base64.b64encode(b"\x89PNG\r\n\x1a\nfixture").decode()
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 
 
 async def event(ws, kind):
@@ -246,6 +246,17 @@ def test_uploaded_images_restore_from_native_history(tmp_path):
     )
     history.saved(chat, str(thread), "")
     assert history.transcript(chat)["messages"][0]["images"][0]["id"] == image["id"]
+
+
+def test_corrupt_image_batch_creates_no_files(tmp_path):
+    history = Conversations(tmp_path / "history", tmp_path)
+    chat = history.create()["id"]
+    corrupt = base64.b64encode(b"\x89PNG\r\n\x1a\nnot pixels").decode()
+    with pytest.raises(ValueError, match="damaged"):
+        save_uploads(history, chat, [PNG, corrupt])
+    assert not (history.path.parent / "uploads").exists()
+    with pytest.raises(ValueError, match="large"):
+        validate_upload("a" * 5_592_409)
 
 
 @pytest.mark.parametrize(

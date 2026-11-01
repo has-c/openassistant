@@ -7,10 +7,14 @@ import os
 import re
 import stat
 import uuid
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image, UnidentifiedImageError
 
 MAX_IMAGE = 4 * 1024 * 1024
 MAX_IMAGES = 6
+MAX_PIXELS = 25_000_000
 # Only absolute local paths explicitly included in an assistant message are considered.
 IMAGE_LINK = re.compile(r"!?\[([^\]\n]{0,300})\]\((?:<([^>\n]+)>|(/[^)\n]+))\)")
 
@@ -42,6 +46,16 @@ def validate_upload(encoded):
         or mime not in {"image/png", "image/jpeg", "image/gif", "image/webp"}
     ):
         raise ValueError("Choose a PNG, JPEG, GIF or WebP image under 4 MB.")
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.width * image.height > MAX_PIXELS:
+                raise ValueError("Images must contain at most 25 million pixels.")
+            image.verify()
+        # verify() alone does not decode JPEG pixels or catch truncated streams.
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError, SyntaxError) as error:
+        raise ValueError("The image is damaged or cannot be decoded.") from error
     return data, mime
 
 

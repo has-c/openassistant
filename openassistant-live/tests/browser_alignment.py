@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1] / "openassistant/live/static"
 TEXT, IMAGE = '["local","text"]', '["local","vision"]'
-PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN2kAAAAASUVORK5CYII="
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 
 
 async def main():
@@ -61,7 +61,7 @@ async def main():
                                     "query": data["query"],
                                     "request_id": data["request_id"],
                                     "offset": 0,
-                                    "next": None,
+                                    "next": 50 if data["limit"] == 50 else None,
                                     "chats": [
                                         {
                                             "id": "chat",
@@ -186,7 +186,50 @@ async def main():
             await expect(page.locator("#pending-inbox")).to_be_hidden()
             await page.locator("#toggle-history").click()
             await expect(page.locator("#saved-chats")).to_contain_text("Active")
+            await page.locator("#older-chats").click()
+            await expect(page.locator("#older-chats")).to_be_hidden()
+            sockets[0].send(json.dumps({"type": "turn_ready", "turn": 1, "conversation": "chat"}))
+            await page.wait_for_timeout(50)
+            assert [d for d in sent if d.get("type") == "conversations"][-1]["limit"] == 100
             await page.locator("#close-history").click()
+            # Native upload paths are structured data, not Markdown fragments.
+            sockets[0].send(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "turn": 1,
+                        "conversation": "chat",
+                        "text": "An attachment",
+                        "images": [
+                            {
+                                "id": "image-fixture",
+                                "path": "/tmp/history (test)/photo.png",
+                                "alt": "Uploaded photo",
+                            }
+                        ],
+                    }
+                )
+            )
+            await expect(page.locator("#live-caption .message-image")).to_have_count(1)
+            # Reopened terminal tasks cannot look as if their unfinished steps are running.
+            sockets[0].send(
+                json.dumps(
+                    {
+                        "type": "conversation",
+                        "id": "chat",
+                        "turn": 1,
+                        "busy": False,
+                        "messages": [],
+                        "task": {
+                            "state": "stopped",
+                            "steps": [{"step": "Still unfinished", "status": "in_progress"}],
+                        },
+                    }
+                )
+            )
+            await expect(page.locator('#task-list [data-state="paused"]')).to_have_count(1)
+            await page.wait_for_timeout(50)
+            assert [d for d in sent if d.get("type") == "conversations"][-1]["limit"] == 100
             # Exercise failure recovery without stranding the picker in a disabled state.
             sockets[0].send(
                 json.dumps({"type": "model_error", "conversation": "chat", "text": "Unavailable"})

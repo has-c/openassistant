@@ -47,7 +47,8 @@ but cannot answer its requests. Requests expire within two minutes; cancellation
 disconnect and expiry never grant consent. Pi's ordinary tools retain their existing
 permissions: this panel does not add a command approval sandbox.
 
-Images may be PNG, JPEG, GIF or WebP, up to five per message and 4 MiB each.
+Images may be PNG, JPEG, GIF or WebP, up to five per message, 4 MiB and 25 million
+pixels each. Pillow verifies and decodes uploads to reject damaged image files.
 Input batches are validated before storage and submitted as native Pi image inputs.
 Pi/provider image limits still apply. If a queued message's model no longer accepts
 images, the message stays paused for review. Accepted images are retained privately
