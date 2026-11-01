@@ -304,3 +304,44 @@ async def test_real_adapter_uses_provider_ids_and_runtime_levels():
     assert len({m["id"] for m in result["models"]}) == 2
     assert result["provider"] == "b" and result["levels"] == ["off", "high"]
     assert result["default"] == model_key(models[0])
+
+
+async def test_turn_survives_fifteen_minute_clock_advance(config, monkeypatch):
+    from threading import Event
+
+    from openassistant.live import call as runtime
+
+    started, finish = Event(), Event()
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, *args):
+            started.set()
+            finish.wait(5)
+            return "Finished"
+
+        def stop(self):
+            finish.set()
+
+    monkeypatch.setattr(runtime, "Session", Session)
+    call = runtime.Call(None, config)
+    task = asyncio.create_task(call.run("Work"))
+    assert await asyncio.to_thread(started.wait, 3)
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    try:
+        monkeypatch.setattr(loop, "time", lambda: real_time() + 901)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not task.done()
+        finish.set()
+        await task
+        assert call.snapshot["state"] == "finished"
+    finally:
+        monkeypatch.setattr(loop, "time", real_time)
+        finish.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
