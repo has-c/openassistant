@@ -21,6 +21,10 @@ from .images import capture_images, retain_uploads
 log = logging.getLogger(__name__)
 
 
+class InactivityTimeout(TimeoutError):
+    """The turn watchdog observed no Pi progress within its configured limit."""
+
+
 class Call:
     def __init__(self, ws, config, transcriber=None):
         self.ws, self.config = ws, config
@@ -321,7 +325,7 @@ class Call:
                 if self.pending_ui:
                     self.last_activity = loop.time()
                 elif loop.time() - self.last_activity >= seconds:
-                    await events.put(("failed", TimeoutError("Pi inactivity timeout")))
+                    await events.put(("failed", InactivityTimeout("Pi inactivity timeout")))
                     return
 
         async def speak():
@@ -460,15 +464,7 @@ class Call:
                 await self.send("done")
         except asyncio.CancelledError:
             raise
-        except TurnRejected as error:
-            await self.send("upload_error", text=str(error))
         except Exception as error:
-            if not self.accepted:
-                await self.send(
-                    "upload_error",
-                    text="Could not prepare this message. Check the model and retry.",
-                )
-                return
             reference = uuid.uuid4().hex[:10]
             log.warning(
                 "Live turn failed ref=%s type=%s stage=%s",
@@ -476,6 +472,17 @@ class Call:
                 type(error).__name__,
                 stage,
             )
+            if not self.accepted:
+                if stage == "transcription":
+                    message = (
+                        "Could not transcribe this recording. Try recording again or send text."
+                    )
+                elif isinstance(error, TurnRejected):
+                    message = str(error)
+                else:
+                    message = "Could not prepare this message. Check the model and retry."
+                await self.send("upload_error", text=f"{message} Reference {reference}.")
+                return
             # A disconnected browser cannot receive an error notification.
             with contextlib.suppress(ClientError, ConnectionError):
                 await self.send(
@@ -484,7 +491,7 @@ class Call:
                     text=(
                         "Task stopped after no Pi progress. "
                         "Adjust --inactivity-timeout for silent tools."
-                        if isinstance(error, TimeoutError)
+                        if isinstance(error, InactivityTimeout)
                         else f"Task stopped. Reference {reference}."
                     ),
                 )

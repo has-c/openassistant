@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from pi_agent.errors import PiTimeoutError
 from test_alignment import connect, event, open_chat
 from test_pi_session import Client, Stream
 
@@ -17,6 +18,69 @@ from openassistant.live import call as runtime
 from openassistant.live.history import Conversations
 from openassistant.models import ModelCatalogue, model_options
 from openassistant.pi_session import Session, TurnRejected
+
+
+@pytest.mark.parametrize("error_type", [TimeoutError, PiTimeoutError])
+async def test_rpc_and_bridge_timeouts_do_not_report_inactivity(error_type, monkeypatch, caplog):
+    class TimedOut:
+        def __init__(self, *args, **kwargs):
+            self.ready = kwargs["ready"]
+
+        def run(self, *args, **kwargs):
+            self.ready()
+            raise error_type("private backend detail")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(runtime, "Session", TimedOut)
+    call = runtime.Call(None, SimpleNamespace(inactivity_timeout=0))
+    await call.run("Hello")
+    assert call.snapshot["state"] == "failed"
+    assert "no Pi progress" not in call.snapshot["detail"]
+    reference = call.snapshot["detail"].split("Reference ")[1].rstrip(".")
+    assert f"ref={reference}" in caplog.text
+    assert "private backend detail" not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["startup", "rejection", "transcription"])
+async def test_preaccept_failures_have_safe_diagnostics(failure, monkeypatch, caplog):
+    class FailingSession:
+        def __init__(self, *args, **kwargs):
+            if failure == "startup":
+                raise RuntimeError("private backend detail")
+
+        def run(self, *args, **kwargs):
+            raise TurnRejected("Configure a default model in Pi first.")
+
+        def stop(self):
+            pass
+
+    class Transcriber:
+        async def transcribe(self, path):
+            raise RuntimeError("private backend detail")
+
+    monkeypatch.setattr(runtime, "Session", FailingSession)
+    call = runtime.Call(None, SimpleNamespace(inactivity_timeout=0), Transcriber())
+    sent = []
+
+    async def send(kind, **payload):
+        sent.append((kind, payload))
+
+    monkeypatch.setattr(call, "send", send)
+    await call.run("Hello", recording=b"recording" if failure == "transcription" else None)
+    assert not call.accepted
+    assert not any(kind in {"start", "user", "task"} for kind, _ in sent)
+    message = next(payload["text"] for kind, payload in sent if kind == "upload_error")
+    reference = message.split("Reference ")[1].rstrip(".")
+    assert f"ref={reference}" in caplog.text
+    stage = "transcription" if failure == "transcription" else "agent"
+    assert f"stage={stage}" in caplog.text
+    assert "private backend detail" not in caplog.text + message
+    if failure == "transcription":
+        assert "transcribe" in message and "Check the model" not in message
+    elif failure == "rejection":
+        assert "Configure a default model in Pi first." in message
 
 
 async def test_discovery_failure_does_not_block_concurrent_turns(tmp_path, monkeypatch):
