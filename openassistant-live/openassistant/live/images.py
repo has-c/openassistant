@@ -1,9 +1,12 @@
 """Capture image references from assistant replies for authenticated live chats."""
 
+import base64
+import binascii
 import hashlib
 import os
 import re
 import stat
+import uuid
 from pathlib import Path
 
 MAX_IMAGE = 4 * 1024 * 1024
@@ -22,6 +25,56 @@ def image_type(data):
     if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
         return "image/webp"
     return None
+
+
+def validate_upload(encoded):
+    """Decode a bounded base64 upload and return its bytes and detected MIME type."""
+    if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_IMAGE + 2) // 3):
+        raise ValueError("Image is too large or unavailable.")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("Invalid image data.") from None
+    mime = image_type(data)
+    if (
+        not data
+        or len(data) > MAX_IMAGE
+        or mime not in {"image/png", "image/jpeg", "image/gif", "image/webp"}
+    ):
+        raise ValueError("Choose a PNG, JPEG, GIF or WebP image under 4 MB.")
+    return data, mime
+
+
+def save_upload(history, conversation, encoded):
+    """Validate and privately retain one browser image for the native SDK and history."""
+    if not history or not conversation:
+        raise ValueError("Image history is unavailable.")
+    data, mime = validate_upload(encoded)
+    folder = history.path.parent / "uploads" / conversation
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    suffix = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }[mime]
+    path = folder / (uuid.uuid4().hex + suffix)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+    identifier = hashlib.sha256(data).hexdigest()
+    history.save_image(conversation, "uploads", identifier, str(path), "Attached image", mime, data)
+    return {"id": identifier, "path": str(path), "alt": "Attached image"}
+
+
+def save_uploads(history, conversation, encoded_images):
+    """Validate a browser image batch before retaining its individual uploads."""
+    if not isinstance(encoded_images, list) or not 1 <= len(encoded_images) <= 5:
+        raise ValueError("Attach between one and five images.")
+    # Reject invalid batches before writing any files.
+    for encoded in encoded_images:
+        validate_upload(encoded)
+    return [save_upload(history, conversation, encoded) for encoded in encoded_images]
 
 
 def capture_images(history, conversation, item, text):

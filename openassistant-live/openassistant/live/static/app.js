@@ -1,51 +1,42 @@
+/**
+ * Coordinate the live call UI and WebSocket event stream.
+ *
+ * Owns the active turn, composer queue, audio playback, image rendering and
+ * shared controls. Conversation restoration and request forms are supplied by
+ * history.js and requests.js; voice.js owns microphone capture.
+ */
 'use strict';
 const $ = id => document.getElementById(id);
-let ws, turn = 0, busy = false, muted = false, ignore = false;
-let soundMode = 'voice', alertAudio;
-try { const saved = localStorage.getItem('openassistant-sound-mode'); if (['off','alerts','voice'].includes(saved)) soundMode = saved; } catch {}
-muted = soundMode !== 'voice';
-function enableAlerts() { try { alertAudio ||= new AudioContext(); void alertAudio.resume().catch(() => {}); } catch {} }
-function attentionBell() {
-  if (soundMode === 'off' || alertAudio?.state !== 'running') return;
-  const at = alertAudio.currentTime;
-  for (const [frequency, volume] of [[880, .12], [1320, .04]]) {
-    const tone = alertAudio.createOscillator(), gain = alertAudio.createGain();
-    tone.frequency.value = frequency; gain.gain.setValueAtTime(0, at);
-    gain.gain.linearRampToValueAtTime(volume, at + .015); gain.gain.exponentialRampToValueAtTime(.0001, at + .8);
-    tone.connect(gain).connect(alertAudio.destination); tone.onended = () => {tone.disconnect(); gain.disconnect();}; tone.start(at); tone.stop(at + .85);
-  }
-}
-document.addEventListener('pointerdown', enableAlerts);
-document.addEventListener('keydown', enableAlerts);
-function clearRequests() { $('input-requests').replaceChildren(); $('input-requests').hidden = true; }
-function renderRequest(request, ring = true) {
-  if (observing || document.getElementById('request-' + request.id)) return;
-  if (ring) attentionBell();
-  const box = $('input-requests'), section = document.createElement('section'); section.className = 'input-request'; section.id = 'request-' + request.id;
-  const title = document.createElement('h3'); title.textContent = request.title || 'Input requested'; section.append(title);
-  if (request.message) { const detail = document.createElement('p'); detail.textContent = request.message; section.append(detail); }
-  const respond = value => { send({type:'input_answer', conversation:conversationId, turn, id:request.id, value}); section.querySelectorAll('button, input, select, textarea').forEach(e => e.disabled = true); };
-  if (request.method === 'confirm') {
-    for (const [label, value] of [['No',false],['Yes',true]]) { const button = document.createElement('button'); button.textContent = label; button.type = 'button'; button.onclick = () => respond(value); section.append(button); }
-  } else {
-    const form = document.createElement('form'); let field;
-    if (request.method === 'select') { field = document.createElement('select'); for (const value of request.options) { const option = document.createElement('option'); option.value = option.textContent = value; field.append(option); } }
-    else { field = document.createElement(request.method === 'editor' ? 'textarea' : 'input'); field.maxLength = 8000; }
-    if (request.method === 'input') field.placeholder = request.placeholder || '';
-    if (request.method === 'editor') field.value = request.prefill || '';
-    field.setAttribute('aria-label', request.title || 'Response'); form.append(field); const submit = document.createElement('button'); submit.textContent = 'Send'; form.append(submit); form.onsubmit = e => { e.preventDefault(); respond(field.value); }; section.append(form);
-  }
-  const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.type = 'button'; cancel.onclick = () => respond(null); section.append(cancel);
-  box.append(section); box.hidden = false;
-}
-function closeRequest(id) { document.getElementById('request-' + id)?.remove(); $('input-requests').hidden = !$('input-requests').children.length; }
-
+let ws, turn = 0, busy = false, ignore = false;
+let soundMode = 'voice';
+try { const saved = localStorage.getItem('openassistant-sound-mode'); if (['off', 'alerts', 'voice'].includes(saved)) soundMode = saved; } catch { /* Sound preference is optional. */ }
 let clientId = crypto.randomUUID();
 try {
   clientId = localStorage.getItem('openassistant-client') || clientId;
   localStorage.setItem('openassistant-client', clientId);
 } catch { /* Reconnection ownership requires browser storage. */ }
 let player, audioUrl;
+let alertAudio;
+function enableAlerts() {
+  try {
+    alertAudio ||= new AudioContext();
+    void alertAudio.resume().catch(() => {});
+  } catch { /* Visual approval prompts remain available without audio. */ }
+}
+function approvalBell() {
+  if (soundMode === 'off' || alertAudio?.state !== 'running') return;
+  const at = alertAudio.currentTime;
+  for (const [frequency, volume] of [[880, 0.12], [1320, 0.04]]) {
+    const tone = alertAudio.createOscillator(), envelope = alertAudio.createGain();
+    tone.frequency.value = frequency;
+    envelope.gain.setValueAtTime(0, at);
+    envelope.gain.linearRampToValueAtTime(volume, at + 0.015);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, at + 0.8);
+    tone.connect(envelope).connect(alertAudio.destination);
+    tone.onended = () => { tone.disconnect(); envelope.disconnect(); };
+    tone.start(at); tone.stop(at + 0.85);
+  }
+}
 let joinedAt = null;
 let pendingSpeech = null;
 let leaving = false;
@@ -54,17 +45,57 @@ let connectionSerial = 0;
 let taskPhase = 'idle', taskStarted = null;
 const activities = new Map();
 const textQueue = [];
+let pendingImages = [];
+function renderImageDraft() {
+  const container = $('image-draft'); container.replaceChildren();
+  container.hidden = !pendingImages.length;
+  for (const image of pendingImages) {
+    const row = document.createElement('div'); row.className = 'image-draft-item';
+    const preview = document.createElement('img'); preview.src = image.preview; preview.alt = '';
+    const name = document.createElement('span'); name.textContent = image.name;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove ${image.name}`);
+    remove.onclick = () => { URL.revokeObjectURL(image.preview); pendingImages = pendingImages.filter(item => item !== image); renderImageDraft(); };
+    row.append(preview, name, remove); container.append(row);
+  }
+}
+function clearImagesDraft() {
+  for (const image of pendingImages) URL.revokeObjectURL(image.preview);
+  pendingImages = []; $('image-file').value = ''; renderImageDraft();
+}
+async function chooseImages(files) {
+  files = [...files]; if (!files.length) return;
+  if (files.length + pendingImages.length > 5) { notice('Attach up to five images.'); return; }
+  if (files.some(file => !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type) || file.size > 4 * 1024 * 1024 || !file.size)) {
+    notice('Choose PNG, JPEG, GIF or WebP images up to 4 MiB each.'); return;
+  }
+  const chat = conversationId;
+  const data = await Promise.all(files.map(file => new Promise((resolve, reject) => {
+    const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
+  }))).catch(() => null);
+  if (!data || chat !== conversationId) { if (!data) notice('Could not read the images.'); return; }
+  if (files.length + pendingImages.length > 5) { notice('Attach up to five images.'); return; }
+  pendingImages.push(...files.map((file, i) => ({data:data[i], name:file.name || 'Pasted image', preview:URL.createObjectURL(file)})));
+  $('image-file').value = ''; renderImageDraft();
+}
+$('attach-image').onclick = () => $('image-file').click();
+$('image-file').onchange = () => { void chooseImages($('image-file').files); };
+$('prompt').addEventListener('paste', event => {
+  const files = [...(event.clipboardData?.files || [])].filter(item => item.type.startsWith('image/'));
+  if (files.length) { event.preventDefault(); void chooseImages(files); }
+});
 let queuePaused = false;
 function renderQueue() {
   const list = $('text-queue'); list.replaceChildren();
   for (const entry of textQueue) {
     const row = document.createElement('li');
     const label = document.createElement('span');
-    label.textContent = `${entry.status === 'sending' ? 'Sending guidance' : entry.status === 'unconfirmed' ? 'Delivery unconfirmed — check before retrying' : queuePaused ? 'Paused' : 'Queued'}: ${entry.text}`;
+    label.textContent = `${entry.status === 'sending' ? 'Sending guidance' : entry.status === 'unconfirmed' ? 'Delivery unconfirmed — check before retrying' : queuePaused ? 'Paused' : 'Queued'}: ${entry.text}${entry.images?.length ? ' [Images: ' + entry.images.map(image => image.name).join(', ') + ']' : ''}`;
     row.append(label);
     const add = document.createElement('button'); add.textContent = busy ? 'Add now' : 'Send';
     add.disabled = entry.status !== 'queued' || ws?.readyState !== WebSocket.OPEN || ignore
-      || observing || !historyReady;
+      || observing || !historyReady || (busy && !!entry.images?.length);
     add.onclick = () => {
       if (busy) {
         entry.status = 'sending'; renderQueue();
@@ -86,7 +117,21 @@ function dispatchQueued(entry = textQueue[0]) {
   textQueue.splice(textQueue.indexOf(entry), 1);
   sendingEntry = entry;
   beginTask(entry.text); busy = true; syncMicrophone();
-  send({type:'prompt', text:entry.text}); renderQueue();
+  send({type:'prompt', text:entry.text, ...(entry.images?.length ? {images:entry.images.map(image => image.data)} : {})}); renderQueue();
+}
+function renderPlan(data) {
+  const list = $('task-list'); list.replaceChildren();
+  for (const step of (data.steps || []).slice(0, 20)) {
+    const row = document.createElement('li');
+    row.dataset.state = step.status;
+    const mark = document.createElement('span'); mark.className = 'task-mark';
+    mark.textContent = step.status === 'completed' ? '●' : step.status === 'in_progress' ? '◉' : '○';
+    mark.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span'); label.textContent = step.step;
+    row.setAttribute('aria-label', `${step.step}: ${step.status === 'in_progress' ? 'in progress' : step.status}`);
+    row.append(mark, label); list.append(row);
+  }
+  list.hidden = !list.children.length;
 }
 function taskState(state, detail) {
   taskPhase = state;
@@ -96,21 +141,28 @@ function taskState(state, detail) {
   $('task-panel').dataset.state = state;
   $('task-state').textContent = {
     idle:'Ready', sending:'Sending…', working:'Working',
-    stopping:'Stopping task…', stopped:'Task stopped',
+    input:'Needs your answer', approval:'Needs your approval', stopping:'Stopping task…', stopped:'Task stopped',
     finished:'Turn finished', failed:'Task error', interrupted:'Task interrupted',
     disconnected:'Disconnected — task may still be working'
   }[state] || state;
   $('task-detail').textContent = detail;
   $('task-state').title = detail;
-
+  if (['stopped','failed','interrupted','finished'].includes(state)) {
+    for (const row of $('task-list').children) {
+      if (row.dataset.state !== 'completed') {
+        row.dataset.state = 'paused'; row.querySelector('.task-mark').textContent = '–';
+        row.setAttribute('aria-label', `${row.lastElementChild.textContent}: not completed`);
+      }
+    }
+  }
 }
 function beginTask(text) {
   taskStarted = Date.now(); activities.clear(); $('activity-list').replaceChildren();
   $('task-time').textContent = '0s elapsed';
-  $('task-activity').hidden = true; $('task-activity').open = false;
+  renderPlan({steps: []}); $('task-activity').hidden = true; $('task-activity').open = false;
   $('live-caption').hidden = true;
   $('activity-count').textContent = '0'; $('task-request').textContent = text;
-  taskState('sending', 'Sending…');
+  taskState('sending', 'Waiting for OpenAssistant to accept your request.');
 }
 function activity(data) {
   $('task-activity').hidden = false;
@@ -126,12 +178,16 @@ function activity(data) {
   $('activity-count').textContent = String(activities.size);
 }
 function showPanel(open) {
+  if (open) showInbox(false);
   $('conversation').hidden = !open;
   $('toggle-panel').setAttribute('aria-expanded', String(open));
   if (open && innerWidth <= 1100) {
     $('chat-history').hidden = true;
     $('toggle-history').setAttribute('aria-expanded', 'false');
   }
+  // Read the transcript's dimensions after revealing the panel and closing
+  // competing drawers so both pointer and keyboard opening show the latest reply.
+  if (open) $('transcript').scrollTop = $('transcript').scrollHeight;
 }
 $('toggle-panel').onclick = () => showPanel($('conversation').hidden);
 $('close-panel').onclick = () => { showPanel(false); $('toggle-panel').focus(); };
@@ -141,14 +197,9 @@ document.addEventListener('keydown', event => {
   if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.repeat ||
       event.isComposing || (event.code !== 'KeyW' && event.key.toLowerCase() !== 'w')) return;
   const dialog = document.querySelector('dialog[open]');
-  if (dialog) {
-    event.preventDefault(); dialog.close(); return;
-  }
-  if (!$('conversation').hidden) {
-    event.preventDefault(); $('close-panel').click(); return;
-  }
-  if (!$('chat-history').hidden) {
-    event.preventDefault(); $('close-history').click();
+  if (dialog) { event.preventDefault(); dialog.close(); return; }
+  for (const [panel, close] of [['pending-inbox','close-inbox'], ['conversation','close-panel'], ['chat-history','close-history']]) {
+    if (!$(panel).hidden) { event.preventDefault(); $(close).click(); return; }
   }
 });
 document.addEventListener('keydown', event => {
@@ -160,7 +211,7 @@ document.addEventListener('keydown', event => {
     const control = target instanceof Element && (target.closest('button, a, input, textarea, select, summary, [contenteditable], [role="button"], [role="textbox"], [role="link"], [tabindex]:not([tabindex="-1"])') || target.isContentEditable);
     if (!control) { event.preventDefault(); $('prompt').focus(); }
   }
-  if (!document.querySelector('dialog[open]') && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'c') {
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'c') {
     event.preventDefault(); showPanel(true); $('close-panel').focus();
   }
 });
@@ -168,13 +219,14 @@ setInterval(() => {
   if (joinedAt === null) return;
   const seconds = Math.floor((Date.now() - joinedAt) / 1000);
   $('elapsed').textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  if (taskStarted && ['sending','working','stopping'].includes(taskPhase)) {
+  if (taskStarted && ['sending','working','input','approval','stopping'].includes(taskPhase)) {
     $('task-time').textContent = `${Math.floor((Date.now() - taskStarted) / 1000)}s elapsed`;
   }
 }, 1000);
 const clips = [], messages = new Map();
 const notice = text => $('notice').textContent = text;
-const audioNotices = new Set(['Audio unavailable.', 'Click Play audio to allow voice playback.',
+const audioNotices = new Set(['Click Play audio to allow voice playback.',
+  'Select Voice & alerts to allow voice playback.',
   'This browser could not play the audio. Captions remain available.',
   'Audio queue full; following captions.']);
 function clearAudioNotice() { if (audioNotices.has($('notice').textContent)) notice(''); }
@@ -194,13 +246,13 @@ const microphone = new HandsFreeMic({
     $('mic').setAttribute('aria-pressed', String(state !== 'off'));
     $('mic-state').textContent = {off:'Microphone off', listening:'Listening', waiting:'Waiting for OpenAssistant'}[state];
     if (state === 'listening' && !busy && !player) $('status').textContent = 'Listening';
-    if (state === 'off' && !busy && !player) $('status').textContent = 'Ready';
+    if (state === 'off' && !busy && !player && document.body.classList.contains('connected')) $('status').textContent = 'Ready';
   },
   onError: notice
 });
 function syncMicrophone() { microphone.setPlayback(!!player && !player.paused); }
 function submitSpeech(blob) {
-  beginTask('Transcribing…');
+  beginTask('Transcribing your request…');
   busy = true; controls(true); $('status').textContent = 'Thinking';
   ws.send(blob);
   microphone.setPaused(false);
@@ -226,13 +278,87 @@ fetch(new URL('client-config', location.href)).then(response => {
   if (autoConnect) connect();
 }).catch(() => { $('status').textContent = 'Connection unavailable'; notice('Could not load call settings. Refresh to try again.'); });
 const send = data => {
-  if (['stop','steer'].includes(data.type)) {
+  if (['answer','input_answer','stop','steer'].includes(data.type)) {
     data = {...data, conversation:conversationId};
     // Stop can be pressed before the server's start acknowledgement arrives.
     if (data.type !== 'stop') data.turn = turn;
   }
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
 };
+let inboxFingerprint = '';
+let inboxSize = 0;
+let inboxTicketSequence = 0;
+const inboxTickets = new Map();
+function showInbox(open) {
+  if (open) {
+    showPanel(false);
+    if (innerWidth <= 650) {
+      $('chat-history').hidden = true;
+      $('toggle-history').setAttribute('aria-expanded', 'false');
+    }
+  }
+  $('pending-inbox').hidden = !open;
+  $('toggle-inbox').setAttribute('aria-expanded', String(open));
+}
+$('toggle-inbox').onclick = () => showInbox($('pending-inbox').hidden);
+$('close-inbox').onclick = () => { showInbox(false); $('toggle-inbox').focus(); };
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.isComposing || event.repeat || event.shiftKey || event.altKey ||
+      !(event.metaKey || event.ctrlKey) || $('pending-inbox').hidden) return;
+  const tickets = [...$('inbox-list').querySelectorAll('.inbox-item')];
+  const focused = document.activeElement?.closest('.inbox-item');
+  const ticket = focused;
+  if (!ticket) {
+    if (tickets.length > 1) event.preventDefault();
+    return;
+  }
+  const form = ticket.querySelector('form:not([hidden])');
+  const allow = ticket.querySelector('.inbox-allow:not(:disabled)');
+  if (!form && !allow) return;
+  event.preventDefault();
+  if (form) form.requestSubmit(); else allow.click();
+});
+function renderInbox(items) {
+  const hadRequests = inboxSize > 0;
+  inboxSize = items.length;
+  if (hadRequests && !inboxSize) {
+    const focusInside = $('pending-inbox').contains(document.activeElement);
+    showInbox(false);
+    if (focusInside) $('toggle-inbox').focus({preventScroll:true});
+  }
+  $('inbox-count').textContent = String(items.length);
+  $('inbox-empty').hidden = items.length > 0;
+  const fingerprint = JSON.stringify(items);
+  if (fingerprint === inboxFingerprint) return;
+  inboxFingerprint = fingerprint;
+  const list = $('inbox-list');
+  const keys = new Set(items.map(item => JSON.stringify([item.conversation, item.turn, item.pending.id, item.revision])));
+  const hasNewRequest = [...keys].some(key => !inboxTickets.has(key));
+  if (hasNewRequest) approvalBell();
+  for (const [key, ticket] of inboxTickets) {
+    if (!keys.has(key)) { ticket.remove(); inboxTickets.delete(key); }
+  }
+  for (const item of items) {
+    const key = JSON.stringify([item.conversation, item.turn, item.pending.id, item.revision]);
+    const existing = inboxTickets.get(key);
+    if (existing) {
+      existing.querySelector('h3').textContent = item.title || 'Conversation';
+      existing.querySelector('.inbox-context').textContent = item.request ? `Task: ${item.request}` : '';
+      existing.querySelector('.inbox-context').hidden = !item.request;
+      continue;
+    }
+    const ticket = document.createElement('section'); ticket.className = 'inbox-item';
+    ticket.dataset.conversation = item.conversation; ticket.dataset.requestId = String(item.pending.id);
+    const title = document.createElement('h3'); title.textContent = item.title || 'Conversation'; ticket.append(title);
+    const context = document.createElement('p'); context.className = 'inbox-context'; context.hidden = !item.request; context.textContent = item.request ? `Task: ${item.request}` : ''; ticket.append(context);
+    const pending = item.pending;
+    const respond = answer => send({type:'global_answer', conversation:item.conversation, turn:item.turn, id:pending.id, ...answer});
+    renderPiRequest(ticket, pending, value => respond({value}), ++inboxTicketSequence);
+    list.append(ticket);
+    inboxTickets.set(key, ticket);
+  }
+  if (items.length) showInbox(true);
+}
 function clearAudio() {
   clips.length = 0;
   if (player) { player.pause(); player.src = ''; player = null; }
@@ -241,7 +367,7 @@ function clearAudio() {
   syncMicrophone();
 }
 async function play() {
-  if (player || muted || !clips.length) return;
+  if (player || soundMode !== 'voice' || !clips.length) return;
   audioUrl = URL.createObjectURL(clips.shift());
   player = new Audio(audioUrl);
   player.playbackRate = 1.5;
@@ -251,7 +377,7 @@ async function play() {
   player.onerror = () => { clearAudio(); syncMicrophone(); notice('Audio unavailable.'); };
   syncMicrophone();
   try { await player.play(); } catch {
-    $('sound-label').textContent = 'Play audio'; notice('Click Play audio to allow voice playback.');
+    notice('Select Voice & alerts to allow voice playback.');
   }
 }
 const imageUrls = new Map();
@@ -265,9 +391,11 @@ function showImages(body, text, images) {
   body.replaceChildren();
   const pattern = /!?\[([^\]\n]{0,300})\]\((?:<([^>\n]+)>|(\/[^)\n]+))\)/g;
   let previous = 0;
+  const shown = new Set();
   for (const match of text.matchAll(pattern)) {
     const image = images.find(entry => entry.path === (match[2] || match[3]));
     if (!image) continue;
+    shown.add(image.id);
     body.append(document.createTextNode(text.slice(previous, match.index)));
     const button = document.createElement('button');
     button.className = 'message-image'; button.dataset.imageId = image.id;
@@ -286,6 +414,11 @@ function showImages(body, text, images) {
     body.append(button); previous = match.index + match[0].length;
   }
   body.append(document.createTextNode(text.slice(previous)));
+  // Native image inputs have no Markdown link in the user's text.
+  for (const image of images.filter(image => !shown.has(image.id))) {
+    const holder = document.createElement('div');
+    showImages(holder, `![${image.alt}](${image.path})`, [image]); body.append(holder);
+  }
 }
 $('close-image').onclick = () => $('image-viewer').close();
 function message(id, who, text, append = false, images = []) {
@@ -294,7 +427,7 @@ function message(id, who, text, append = false, images = []) {
   if (!messages.has(id)) {
     const block = document.createElement('div'); block.className = 'message' + (who === 'You' ? ' user' : '');
     const label = document.createElement('strong'); label.textContent = who;
-    const body = document.createElement('span'); block.append(label, body); $('transcript').append(block);
+    const body = document.createElement('div'); block.append(label, body); $('transcript').append(block);
     messages.set(id, body);
     if (messages.size > 100) { const first = messages.keys().next().value; messages.get(first).parentElement.remove(); messages.delete(first); }
   }
@@ -304,13 +437,12 @@ function message(id, who, text, append = false, images = []) {
   showImages(body, raw, images);
   $('live-caption').hidden = false;
   $('live-response').hidden = false;
-  const caption = raw.replace(/!?\[([^\]\n]*)\]\((?:<\/[^>\n]+>|\/[^)\n]+)\)/g, '$1');
-  $('live-caption').textContent = who === 'OpenAssistant' ? caption : `${who}: ${caption}`;
+  showImages($('live-caption'), who === 'OpenAssistant' ? raw : `${who}: ${raw}`, images);
   $('transcript').scrollTop = $('transcript').scrollHeight;
 }
 function controls(connected) {
   for (const id of ['mic', 'sound', 'leave', 'prompt', 'send']) $(id).disabled = !connected;
-  for (const id of ['prompt', 'send', 'mic']) $(id).disabled = !connected || !historyReady;
+  for (const id of ['prompt', 'send', 'mic', 'attach-image']) $(id).disabled = !connected || !historyReady;
   $('mic').disabled ||= observing;
   $('interrupt').disabled = !connected || observing || !(busy || player || clips.length);
   for (const id of ['new-chat', 'search-chats', 'refresh-chats']) $(id).disabled = !connected;
@@ -323,8 +455,7 @@ function connect() {
   clearTimeout(reconnectTimer);
   leaving = false;
   $('login').hidden = autoConnect;
-  $('status').textContent = 'Connecting…';
-  $('connection').textContent = 'Connecting…';
+  $('status').textContent = 'Connecting…'; $('connection').textContent = 'Connecting…';
   const token = $('token').value; $('token').value = '';
   const socketUrl = new URL('ws', location.href);
   socketUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -332,7 +463,11 @@ function connect() {
   ws.onopen = () => ws.send(JSON.stringify({token, client_id:clientId}));
   ws.onerror = () => notice('Could not connect. Check your connection and try again.');
   ws.onclose = event => {
-    queuePaused = true;
+    $('connection').textContent = 'Disconnected';
+    renderInbox([]); showInbox(false); inboxFingerprint = '';
+    // Known unsent messages can wait for the restored turn. Ambiguous sends must not replay.
+    queuePaused ||= !!sendingEntry || textQueue.some(entry => entry.status !== 'queued');
+    if (sendingEntry) { textQueue.unshift({...sendingEntry, status:'unconfirmed'}); sendingEntry = null; }
     for (const entry of textQueue) if (entry.status === 'sending') entry.status = 'unconfirmed';
     joinedAt = null; document.body.classList.remove('connected');
     document.querySelector('.portrait h2').textContent = leaving ? 'Call ended' : 'Connection lost';
@@ -340,21 +475,22 @@ function connect() {
     stopMic(true); clearAudio(); busy = false; ignore = false; pendingSpeech = null;
     historyReady = false; observing = false; controls(false);
     $('login').hidden = false; $('in-call').hidden = true;
-    $('status').textContent = leaving ? 'Call ended' : 'Connection lost'; $('connection').textContent = 'Disconnected';
-    notice(leaving ? 'Call ended.' : 'Connection lost. Reconnecting…');
-    if (['sending','working','stopping'].includes(taskPhase)) {
+    $('status').textContent = leaving ? 'Call ended' : 'Disconnected';
+    notice(leaving ? '' : `Connection lost (code ${event.code}). Rejoin to check your task. Accepted requests keep running; they are not sent twice.`);
+    if (['sending','working','input','approval','stopping'].includes(taskPhase)) {
       taskState('disconnected', 'Rejoin to see the latest progress. Closing the app does not stop an accepted task.');
     }
     if (autoConnect && !leaving && event.code !== 1008) {
       $('login').hidden = true;
-      $('connection').textContent = 'Reconnecting…';
-      notice('Reconnecting…');
+      $('status').textContent = 'Reconnecting…';
+      notice('');
       reconnectTimer = setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     }
   };
   ws.onmessage = event => {
     const data = JSON.parse(event.data);
+    if (data.type === 'pending_inbox') { renderInbox(data.items); return; }
     if (historyEvent(data)) return;
     if (data.conversation && data.conversation !== conversationId) return;
     if (data.type === 'image_data') {
@@ -384,14 +520,15 @@ function connect() {
       if (!busy) dispatchQueued();
       return;
     }
+    if (data.type === 'approval_closed' || data.type === 'input_closed') return;
     if (data.type === 'ready') {
       reconnectDelay = 1000;
-      connectionSerial += 1; turn = 0;
+      $('connection').textContent = 'Connected'; connectionSerial += 1; turn = 0;
       joinedAt = Date.now(); $('elapsed').textContent = '00:00';
       document.body.classList.add('connected');
       document.querySelector('.portrait h2').textContent = 'OpenAssistant';
       $('login').hidden = true; $('in-call').hidden = false; $('name').textContent = data.name;
-      $('connection').textContent = 'Connected'; $('status').textContent = 'Ready';
+      $('status').textContent = 'Ready';
       notice(''); controls(true);
       refreshHistory();
       send(conversationId ? {type:'open_conversation', id:conversationId} : {type:'new_conversation'});
@@ -420,20 +557,24 @@ function connect() {
     if (data.type === 'task') taskState(data.state, data.state === 'finished'
       ? 'The agent has finished this turn. Check its reply for results; audio may still be playing.'
       : data.state === 'failed' ? `${data.text} Check completed actions before retrying. External work may already have happened.`
-      : data.text + '. Speaking over OpenAssistant stops the task; Sound off only mutes replies.');
-    if (data.type === 'input_request') renderRequest(data.request);
-    if (data.type === 'input_closed') closeRequest(data.id);
+      : data.text + '. Speaking over OpenAssistant stops the task; Sound settings control voice and alerts.');
     if (data.type === 'activity') activity(data);
+    if (data.type === 'plan') renderPlan(data);
     if (data.type === 'status') $('status').textContent = data.text;
-    if (data.type === 'user') { $('task-request').textContent = data.text; message(`user-${turn}`, 'You', data.text); }
+    if (data.type === 'user') { $('task-request').textContent = data.text; message(`user-${turn}`, 'You', data.text, false, data.images || []); }
     if (data.type === 'delta') message(`${turn}-${data.item}`, 'OpenAssistant', data.text, true);
-    if (data.type === 'message') { message(`${turn}-${data.item}`, 'OpenAssistant', data.text, false, data.images || []); if (data.images?.length) showPanel(true); }
-    if (data.type === 'result' && ![...messages.keys()].some(key => key.startsWith(`${connectionSerial}-${turn}-`))) { message(`${turn}-result`, 'OpenAssistant', data.text, false, data.images || []); if (data.images?.length) showPanel(true); }
-    if (data.type === 'audio' && !muted) {
+    if (data.type === 'message') { message(`${turn}-${data.item}`, 'OpenAssistant', data.text, false, data.images || []); }
+    if (data.type === 'result' && ![...messages.keys()].some(key => key.startsWith(`${connectionSerial}-${turn}-`))) { message(`${turn}-result`, 'OpenAssistant', data.text, false, data.images || []); }
+    if (data.type === 'audio' && soundMode === 'voice') {
       if (clips.length >= 16) { notice('Audio queue full; following captions.'); clearAudio(); return; }
       clips.push(new Blob([Uint8Array.from(atob(data.data), char => char.charCodeAt(0))], {type:'audio/ogg'})); play();
     }
-    if (data.type === 'notice') notice(data.text);
+    if (data.type === 'notice' && data.text !== 'Voice unavailable; captions are still available.') notice(data.text);
+    if (data.type === 'upload_error') {
+      if (sendingEntry) { textQueue.unshift(sendingEntry); sendingEntry = null; }
+      busy = false; queuePaused = true; taskState('failed', data.text);
+      controls(true); renderQueue(); notice(data.text);
+    }
     if (data.type === 'done') {
       if (taskPhase === 'failed') queuePaused = true;
       if (!player) $('status').textContent = microphone.enabled ? 'Listening' : 'Ready';
@@ -447,7 +588,10 @@ function connect() {
     }
   };
 }
-$('login').onsubmit = event => { event.preventDefault(); connect(); };
+$('login').onsubmit = event => { event.preventDefault(); enableAlerts(); connect(); };
+// Browsers require a user gesture before voice and notification audio can play.
+document.addEventListener('pointerdown', enableAlerts);
+document.addEventListener('keydown', enableAlerts);
 const promptHistories = new Map();
 function resizePrompt() {
   const prompt = $('prompt');
@@ -491,36 +635,83 @@ $('prompt').addEventListener('keydown', event => {
 $('composer').onsubmit = event => {
   event.preventDefault();
   const text = $('prompt').value.trim();
-  if (!text || ws?.readyState !== WebSocket.OPEN) return;
+  if ((!text && !pendingImages.length) || ws?.readyState !== WebSocket.OPEN) return;
   if (textQueue.length >= 10) return notice('Queue full (10 messages). Remove one before adding more.');
+  // A pause belongs to existing or uncertain work, not to a new message in an empty queue.
+  if (!textQueue.length && !sendingEntry && !observing && !ignore) queuePaused = false;
   const history = currentPromptHistory();
-  history.items.push(text); if (history.items.length > 100) history.items.shift();
+  if (text) history.items.push(text); if (history.items.length > 100) history.items.shift();
   history.index = history.items.length; history.draft = '';
-  textQueue.push({id:crypto.randomUUID(), text, status:'queued'});
+  textQueue.push({id:crypto.randomUUID(), text, images:pendingImages.map(({data, name}) => ({data, name})), status:'queued'});
+  clearImagesDraft();
   $('prompt').value = ''; resizePrompt(); renderQueue();
   if (!busy && !ignore && !queuePaused) dispatchQueued();
 };
+let controlTapStarted = 0, previousControlTap = 0;
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Control') { controlTapStarted = 0; previousControlTap = 0; return; }
+  if (event.repeat || event.altKey || event.metaKey || event.shiftKey || event.isComposing) {
+    controlTapStarted = 0; previousControlTap = 0; return;
+  }
+  controlTapStarted = performance.now();
+});
+document.addEventListener('keyup', event => {
+  if (event.key !== 'Control' || !controlTapStarted) return;
+  const now = performance.now();
+  const tap = now - controlTapStarted <= 400 && !event.altKey && !event.metaKey && !event.shiftKey;
+  controlTapStarted = 0;
+  if (!tap || $('mic').disabled || document.querySelector('dialog[open]')) { previousControlTap = 0; return; }
+  if (previousControlTap && now - previousControlTap <= 450) {
+    previousControlTap = 0; $('mic').click();
+  } else previousControlTap = now;
+});
+window.addEventListener('blur', () => { controlTapStarted = 0; previousControlTap = 0; });
 $('mic').onclick = async () => {
   if (microphone.enabled) return microphone.disable();
   syncMicrophone();
   await microphone.enable();
 };
-function updateSound() {
-  muted = soundMode !== 'voice'; $('sound-label').textContent = {off:'Sound off', alerts:'Alerts only', voice:'Voice & alerts'}[soundMode];
+function renderSoundMode() {
+  const labels = {off:'Sound off', alerts:'Alerts only', voice:'Voice & alerts'};
+  $('sound-label').textContent = labels[soundMode];
   for (const button of $('sound-menu').querySelectorAll('[data-sound]')) button.setAttribute('aria-pressed', String(button.dataset.sound === soundMode));
 }
-updateSound();
-$('sound').onclick = async () => {
-  enableAlerts(); clearAudioNotice();
-  if (player?.paused && !muted) { try { await player.play(); clearAudioNotice(); } catch { notice('This browser could not play audio.'); } return; }
-  const open = $('sound-menu').hidden; $('sound-menu').hidden = !open; $('sound').setAttribute('aria-expanded', String(open));
+function showSoundMenu(open) { $('sound-menu').hidden = !open; $('sound').setAttribute('aria-expanded', String(open)); }
+renderSoundMode();
+$('sound').onclick = () => { enableAlerts(); showSoundMenu($('sound-menu').hidden); };
+$('sound-menu').onclick = async event => {
+  const option = event.target.closest('[data-sound]'); if (!option) return;
+  soundMode = option.dataset.sound;
+  try { localStorage.setItem('openassistant-sound-mode', soundMode); } catch { /* Preference is optional. */ }
+  enableAlerts();
+  if (soundMode !== 'voice') { clearAudio(); clearAudioNotice(); }
+  else {
+    clearAudioNotice();
+    if (player?.paused) { try { await player.play(); } catch { notice('This browser could not play the audio. Captions remain available.'); } }
+  }
+  renderSoundMode(); showSoundMenu(false); $('sound').focus(); syncMicrophone();
 };
-$('sound-menu').onclick = event => {
-  const button = event.target.closest('[data-sound]'); if (!button) return;
-  soundMode = button.dataset.sound; try { localStorage.setItem('openassistant-sound-mode', soundMode); } catch {}
-  updateSound(); if (muted) { clearAudio(); clearAudioNotice(); } else play();
-  $('sound-menu').hidden = true; $('sound').setAttribute('aria-expanded', 'false'); syncMicrophone();
-};
+document.addEventListener('click', event => { if (!event.target.closest('.sound-control')) showSoundMenu(false); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('sound-menu').hidden) { showSoundMenu(false); $('sound').focus(); event.preventDefault(); } });
+let optionTapStarted = 0, previousOptionTap = 0;
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Alt') { optionTapStarted = 0; previousOptionTap = 0; return; }
+  if (event.repeat || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) {
+    optionTapStarted = 0; previousOptionTap = 0; return;
+  }
+  optionTapStarted = performance.now();
+});
+document.addEventListener('keyup', event => {
+  if (event.key !== 'Alt' || !optionTapStarted) return;
+  const now = performance.now();
+  const tap = now - optionTapStarted <= 400 && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+  optionTapStarted = 0;
+  if (!tap || $('interrupt').disabled || document.querySelector('dialog[open]')) { previousOptionTap = 0; return; }
+  if (previousOptionTap && now - previousOptionTap <= 450) {
+    previousOptionTap = 0; $('interrupt').click();
+  } else previousOptionTap = now;
+});
+window.addEventListener('blur', () => { optionTapStarted = 0; previousOptionTap = 0; });
 $('interrupt').onclick = () => { queuePaused = true; interrupt(); renderQueue(); };
 $('leave').onclick = () => { leaving = true; clearTimeout(reconnectTimer); stopMic(true); clearAudio(); ws?.close(); };
 window.addEventListener('pagehide', () => { clearTimeout(reconnectTimer); stopMic(true); clearAudio(); ws?.close(); autoConnect = false; });

@@ -27,8 +27,20 @@ jobs:
         run: python -m ruff check .
       - name: Run tests
         run: python -m pytest -q
-      - name: Check queue interaction
-        run: python tests/browser_text_queue.py
+      - name: Install browser
+        run: python -m playwright install --with-deps chrome
+      - name: Check browser interactions
+        run: |
+          python tests/browser_text_queue.py
+          python tests/browser_alignment.py
+          python tests/browser_attention.py
+          python tests/browser_saved_conversations.py
+          python tests/browser_keyboard_navigation.py
+          python tests/browser_hide_conversations.py
+          python tests/browser_sidebar_resize.py
+          python tests/browser_auto_connect.py
+          python tests/browser_audio_notice.py
+          python tests/browser_handsfree.py
 
   legacy-and-compose:
     name: Legacy imports and compose configuration

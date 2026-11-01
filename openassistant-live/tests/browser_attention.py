@@ -91,22 +91,23 @@ async def main():
             }
             sockets[0].send(
                 json.dumps(
-                    {"type": "input_request", "turn": 1, "conversation": "chat", "request": req}
+                    {
+                        "type": "pending_inbox",
+                        "items": [{"turn": 1, "conversation": "chat", "pending": req}],
+                    }
                 )
             )
-            await expect(page.locator("#input-requests")).to_be_visible()
+            await expect(page.locator("#pending-inbox")).to_be_visible()
             assert await page.evaluate("window.bells") == 2
             await page.screenshot(path=f"/tmp/openassistant-attention-{width}.png")
-            await page.get_by_role("button", name="Yes", exact=True).click()
+            await page.get_by_role("button", name="Confirm", exact=True).click()
             await page.wait_for_timeout(100)
             assert any(
-                x.get("type") == "input_answer" and x.get("value") is True and x.get("id") == "abc"
+                x.get("type") == "global_answer" and x.get("value") is True and x.get("id") == "abc"
                 for x in sent
             )
-            sockets[0].send(
-                json.dumps({"type": "input_closed", "turn": 1, "conversation": "chat", "id": "abc"})
-            )
-            await expect(page.locator("#input-requests")).to_be_hidden()
+            sockets[0].send(json.dumps({"type": "pending_inbox", "items": []}))
+            await expect(page.locator("#pending-inbox")).to_be_hidden()
             await page.close()
         await browser.close()
     print("PASS attention requests and sound controls at desktop, tablet and mobile widths")

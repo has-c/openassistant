@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import contextlib
+import copy
 import hmac
 import itertools
 import json
@@ -15,9 +16,11 @@ from aiohttp import WSMsgType, web
 from aiohttp.client_exceptions import ClientError
 from pi_agent import AsyncPiClient
 
+from ..models import model_options
 from .asr import LiveTranscriber, RemoteTranscriber
 from .call import Call
 from .history import Conversations
+from .images import save_uploads
 
 STATIC = Path(__file__).with_name("static")
 log = logging.getLogger(__name__)
@@ -52,13 +55,41 @@ def create_app(config):
     occupied = set()
     connections = set()
     calls, active = set(), {}
+    preparing = set()
     serials = itertools.count(1)
     title_tasks = {}
+    selection_lock = asyncio.Lock()
+
+    async def selection(identifier, data=None):
+        # Validation and persistence form one operation, including concurrent tabs.
+        async with selection_lock:
+            selected = history.model(identifier)
+            if data and data["type"] == "model_select":
+                selected = data.get("model")
+                if selected is not None and (not isinstance(selected, str) or len(selected) > 500):
+                    raise ValueError("Invalid model selection")
+            options = await model_options(config, selected)
+            effort = history.effort(identifier, options["effective"])
+            if data and data["type"] == "effort_select":
+                if data.get("model") != options["effective"]:
+                    raise ValueError("The model changed. Choose thinking effort again.")
+                effort = data.get("effort")
+                if effort not in options["levels"]:
+                    raise ValueError("Unsupported thinking effort")
+            if effort not in options["levels"]:
+                effort = options["effort"]
+            options["effort"] = effort
+            history.set_selection(identifier, selected, options["effective"], effort)
+            return options
 
     async def update_title(identifier, version):
         try:
             transcript = await asyncio.to_thread(history.transcript, identifier)
-            title = await generate_title(config, transcript["messages"])
+            title_config = copy.copy(config)
+            selected = history.model(identifier)
+            if selected:
+                title_config.pi_provider, title_config.model = json.loads(selected)
+            title = await generate_title(title_config, transcript["messages"])
             if not title or not history.set_title_if_current(identifier, version, title):
                 return
 
@@ -95,6 +126,30 @@ def create_app(config):
     whisper_endpoint = getattr(config, "whisper_endpoint", None)
     transcriber = RemoteTranscriber(whisper_endpoint) if whisper_endpoint else LiveTranscriber()
 
+    async def pending_for(peer):
+        if not peer.ws or peer.ws.closed or not peer.owner:
+            return
+        items = []
+        for identifier, task in tuple(active.items()):
+            if task.owner != peer.owner or task.principal != peer.principal:
+                continue
+            for future, pending in tuple(task.pending_ui.values()):
+                if not future.done():
+                    items.append(
+                        {
+                            "conversation": identifier,
+                            "turn": task.serial,
+                            "title": history.get(identifier)["title"],
+                            "request": task.snapshot.get("request", ""),
+                            "pending": pending,
+                        }
+                    )
+        async with asyncio.timeout(2):
+            await peer.ws.send_json({"type": "pending_inbox", "items": items})
+
+    async def pending_changed():
+        await asyncio.gather(*(pending_for(peer) for peer in tuple(calls)), return_exceptions=True)
+
     @web.middleware
     async def headers(request, handler):
         response = await handler(request)
@@ -113,7 +168,7 @@ def create_app(config):
     async def socket(request):
         if request.headers.get("Origin") != config.origin or len(connections) >= 8:
             raise web.HTTPForbidden()
-        ws = web.WebSocketResponse(max_msg_size=10_000_000, heartbeat=30)
+        ws = web.WebSocketResponse(max_msg_size=30_000_000, heartbeat=30)
         connections.add(ws)
         name = None
         call = None
@@ -151,6 +206,7 @@ def create_app(config):
                 call.owner = None
             call.principal = "tailnet" if getattr(config, "tailnet_only", False) else name
             call.history, call.peers = history, calls
+            call.pending_changed = pending_changed
             calls.add(call)
 
             async def run_turn(task_call, prompt, recording):
@@ -174,8 +230,12 @@ def create_app(config):
                     await task_call.send("turn_ready")
 
             await call.send("ready", name="You" if getattr(config, "tailnet_only", False) else name)
+            await pending_for(call)
             async for message in ws:
                 if message.type == WSMsgType.BINARY:
+                    if len(message.data) > 10_000_000:
+                        await call.send("notice", text="Recording is too large.")
+                        continue
                     data = {"type": "recording"}
                 elif message.type == WSMsgType.TEXT:
                     data = json.loads(message.data)
@@ -184,6 +244,41 @@ def create_app(config):
                 else:
                     break
                 kind = data.get("type")
+                if history and kind in {"model_list", "model_select", "effort_select"}:
+                    if not call.conversation or data.get("conversation") != call.conversation:
+                        await call.send("notice", text="Open a chat first.")
+                        continue
+                    try:
+                        options = await selection(call.conversation, data)
+                    except Exception:
+                        await call.send(
+                            "model_error",
+                            text="Could not load or change models. "
+                            "Selection unchanged; retry or choose Default.",
+                        )
+                    else:
+                        await call.send("model_options", **options)
+                        for peer in tuple(calls):
+                            if peer is not call and peer.conversation == call.conversation:
+                                await peer.send("model_options", **options)
+                    continue
+                if history and kind == "pending_inbox":
+                    await pending_for(call)
+                    continue
+                if history and kind == "global_answer":
+                    target = active.get(data.get("conversation"))
+                    if not (
+                        target
+                        and call.owner
+                        and target.owner == call.owner
+                        and target.principal == call.principal
+                        and data.get("turn") == target.serial
+                        and "value" in data
+                        and target.answer_ui(data.get("id"), data["value"])
+                    ):
+                        await call.send("notice", text="That request is no longer available.")
+                    await pending_changed()
+                    continue
                 if kind in ("stop", "steer") and (
                     data.get("conversation", call.conversation) != call.conversation
                     or data.get("turn", call.serial) != call.serial
@@ -226,11 +321,14 @@ def create_app(config):
                                     )
                 elif history and kind == "conversations":
                     try:
-                        page = history.listing(data.get("offset", 0), data.get("query", ""))
+                        page = history.listing(
+                            data.get("offset", 0), data.get("query", ""), data.get("limit", 50)
+                        )
                         await call.send(
                             "conversations",
                             offset=data.get("offset", 0),
                             query=data.get("query", ""),
+                            request_id=data.get("request_id"),
                             **page,
                         )
                     except ValueError:
@@ -262,6 +360,7 @@ def create_app(config):
                         call = Call(ws, config, transcriber)
                         call.owner, call.principal = detached.owner, detached.principal
                         call.history, call.peers = history, calls
+                        call.pending_changed = pending_changed
                         calls.add(call)
                     call.conversation, call.thread = chat["id"], chat["thread"]
                     running = active.get(chat["id"])
@@ -348,7 +447,7 @@ def create_app(config):
                             "notice", text="Interrupt OpenAssistant before starting another turn."
                         )
                         continue
-                    if len(active) >= 8:
+                    if len(active) + len(preparing) >= 8:
                         await call.send(
                             "notice",
                             text="OpenAssistant is at capacity. Try again when a task finishes.",
@@ -367,7 +466,7 @@ def create_app(config):
                                 busy=False,
                                 observer=False,
                             )
-                        if call.conversation in active:
+                        if call.conversation in active or call.conversation in preparing:
                             await call.send(
                                 "conversation_busy", text="Another call is working in this chat."
                             )
@@ -376,10 +475,41 @@ def create_app(config):
                         # chat since we selected it. Never fork a second first thread.
                         call.thread = history.get(call.conversation)["thread"]
                     prompt = data.get("text", "")
+                    encoded = data.get("images") if kind == "prompt" else None
                     if kind == "prompt" and (
-                        not isinstance(prompt, str) or not 0 < len(prompt.strip()) <= 8000
+                        not isinstance(prompt, str)
+                        or len(prompt) > 8000
+                        or (not prompt.strip() and not encoded)
                     ):
                         continue
+                    # Reserve before discovery awaits, so two first turns cannot fork a chat.
+                    if history:
+                        preparing.add(call.conversation)
+                    try:
+                        call.turn_selection = (
+                            await selection(call.conversation) if history else None
+                        )
+                        call.attachments = []
+                        if encoded:
+                            if not call.turn_selection or not call.turn_selection["images"]:
+                                raise ValueError(
+                                    "This model cannot accept images. Choose an image model."
+                                )
+                            call.attachments = await asyncio.to_thread(
+                                save_uploads, history, call.conversation, encoded
+                            )
+                    except Exception as error:
+                        await call.send(
+                            "upload_error",
+                            text=(
+                                str(error)
+                                if isinstance(error, ValueError)
+                                else "Could not prepare this message. Check the model and retry."
+                            ),
+                        )
+                        continue
+                    finally:
+                        preparing.discard(call.conversation)
                     call.serial = next(serials)
                     if history:
                         active[call.conversation] = call
@@ -427,7 +557,7 @@ def create_app(config):
         if history:
             history.interrupt_tasks()
 
-    app = web.Application(middlewares=[headers], client_max_size=10_000_000)
+    app = web.Application(middlewares=[headers], client_max_size=30_000_000)
     app.router.add_get("/", index)
     app.router.add_get("/ws", socket)
     app.router.add_get("/client-config", client_config)

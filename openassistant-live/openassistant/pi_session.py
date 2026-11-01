@@ -7,6 +7,8 @@ from threading import Event, Lock
 from pi_agent import PiClient
 from pi_agent.errors import PiError
 
+from .plan import plan_steps
+
 
 class Session:
     def __init__(
@@ -30,7 +32,7 @@ class Session:
         self.lock = Lock()
         self.stopped = Event()
 
-    def run(self, thread_id, text):
+    def run(self, thread_id, text, images=None):
         if not isinstance(text, str):
             raise ValueError("Pi currently accepts text prompts only")
         directory = Path(self.config.history_dir).resolve() / "pi-sessions"
@@ -51,6 +53,8 @@ class Session:
             ui_handler=self.ui_handler,
             extra_args=[
                 "--no-skills",
+                "--extension",
+                str(Path(__file__).with_name("extensions") / "plan.ts"),
                 "--append-system-prompt",
                 self.extra_instructions or "You are OpenAssistant.",
             ],
@@ -63,13 +67,17 @@ class Session:
             with client:
                 if self.stopped.is_set():
                     raise RuntimeError("Task stopped")
+                selection = getattr(self.config, "turn_selection", None)
+                if selection:
+                    client.set_model(selection["provider"], selection["model"])
+                    client.set_thinking_level(selection["effort"])
                 session_file = client.session.session_file
                 if not session_file or Path(session_file).resolve().parent != directory:
                     raise RuntimeError("Pi did not create a session in the expected directory")
                 self.progress({"activity": "Working"})
                 item_id = str(uuid.uuid4())
                 saved = False
-                with client.stream(text) as stream:
+                with client.stream(text, **({"images": images} if images else {})) as stream:
                     for event in stream:
                         if not saved and Path(session_file).is_file():
                             self.saved_thread(session_file)
@@ -77,6 +85,18 @@ class Session:
                         if self.stopped.is_set():
                             raise RuntimeError("Task stopped")
                         raw = getattr(event, "raw", {}) or {}
+                        if (
+                            self.message_event
+                            and raw.get("type") == "tool_execution_end"
+                            and raw.get("toolName") == "update_plan"
+                            and not raw.get("isError")
+                        ):
+                            try:
+                                steps = plan_steps(raw["result"]["details"]["steps"])
+                            except (KeyError, TypeError, ValueError):
+                                pass
+                            else:
+                                self.message_event("plan", {"steps": steps})
                         if self.message_event and raw.get("type") in (
                             "tool_execution_start",
                             "tool_execution_end",

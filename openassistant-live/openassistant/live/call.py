@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import contextlib
+import copy
 import logging
 import re
 import tempfile
@@ -34,6 +35,9 @@ class Call:
         self.principal = None
         self.snapshot = {}
         self.pending_ui = {}
+        self.pending_changed = None
+        self.turn_selection = None
+        self.attachments = []
 
     def remember(self, kind, data):
         if kind == "start":
@@ -44,8 +48,10 @@ class Call:
                 "request": "",
                 "responses": [],
                 "activities": [],
+                "steps": [],
             }
             if self.history and self.conversation:
+                self.history.save_plan(self.conversation, [])
                 self.history.update_task(
                     self.conversation, "working", "Working", self.snapshot["started"]
                 )
@@ -60,6 +66,10 @@ class Call:
                 )
         elif kind == "user":
             self.snapshot["request"] = data.get("text", "")
+        elif kind == "plan":
+            self.snapshot["steps"] = data["steps"]
+            if self.history and self.conversation:
+                self.history.save_plan(self.conversation, data["steps"])
         elif kind == "activity":
             rows = self.snapshot.setdefault("activities", [])
             rows[:] = [r for r in rows if not data.get("id") or r.get("id") != data["id"]]
@@ -130,6 +140,7 @@ class Call:
                 "message",
                 "result",
                 "activity",
+                "plan",
                 "done",
                 "stopped",
                 "turn_ready",
@@ -173,6 +184,7 @@ class Call:
         self.snapshot["pending_ui"] = [entry[1] for entry in self.pending_ui.values()]
         try:
             await self.send("input_request", request=item)
+            await self.refresh_pending()
             timeout = request.get("timeout")
             seconds = (
                 min(120, max(0.1, timeout / 1000)) if isinstance(timeout, (int, float)) else 120
@@ -185,6 +197,28 @@ class Call:
             self.pending_ui.pop(token, None)
             self.snapshot["pending_ui"] = [entry[1] for entry in self.pending_ui.values()]
             await self.send("input_closed", id=token)
+            await self.refresh_pending()
+
+    async def refresh_pending(self):
+        if self.pending_changed:
+            await self.pending_changed()
+        if self.snapshot.get("state") not in {"finished", "failed", "stopped", "interrupted"}:
+            state = (
+                "approval"
+                if any(item["method"] == "confirm" for _, item in self.pending_ui.values())
+                else "input"
+                if self.pending_ui
+                else "working"
+            )
+            await self.send(
+                "task",
+                state=state,
+                text={
+                    "approval": "Needs approval",
+                    "input": "Needs your answer",
+                    "working": "Working",
+                }[state],
+            )
 
     def answer_ui(self, token, value):
         entry = self.pending_ui.get(token) if isinstance(token, str) else None
@@ -271,7 +305,7 @@ class Call:
                     log.warning("Speech synthesis unavailable")
 
         try:
-            async with asyncio.timeout(900):
+            async with asyncio.timeout(None):
                 if recording is not None:
                     stage = "transcription"
                     await self.send("status", text="Transcribing")
@@ -286,11 +320,13 @@ class Call:
                         stage="transcription",
                         milliseconds=round((loop.time() - started) * 1000),
                     )
-                await self.send("user", text=prompt)
+                await self.send("user", text=prompt, images=self.attachments)
                 await self.send("task", state="working", text="Working on your request")
                 stage = "agent"
+                turn_config = copy.copy(self.config)
+                turn_config.turn_selection = self.turn_selection
                 self.session = Session(
-                    self.config,
+                    turn_config,
                     lambda thread: self.saved_thread(thread, prompt),
                     lambda value: bridge(events.put(("progress", value))),
                     message_event=lambda kind, value: bridge(events.put((kind, value))),
@@ -303,12 +339,29 @@ class Call:
                         " To show a local image in this app, include it in your final reply "
                         "as Markdown image syntax with an absolute path, such as "
                         "![Description](/tmp/example.png). Use PNG, JPEG, GIF or WebP."
+                        " For work with multiple steps, use update_plan with a steps array "
+                        "to publish and maintain a concise plan. Skip plans for simple replies."
                     ),
                 )
 
                 async def generate():
                     try:
-                        result = await asyncio.to_thread(self.session.run, self.thread, prompt)
+                        images = []
+                        for attachment in self.attachments:
+                            row = self.history.image(self.conversation, attachment["id"])
+                            images.append(
+                                {
+                                    "type": "image",
+                                    "mimeType": row["mime"],
+                                    "data": base64.b64encode(row["data"]).decode("ascii"),
+                                }
+                            )
+                        result = await asyncio.to_thread(
+                            self.session.run,
+                            self.thread,
+                            prompt,
+                            **({"images": images} if images else {}),
+                        )
                         await events.put(("result", result))
                     except Exception as error:
                         await events.put(("failed", error))
@@ -330,7 +383,7 @@ class Call:
                         elif isinstance(value, str):
                             await self.send("activity", label=value[:240], state="update")
                         continue
-                    if kind == "activity":
+                    if kind in ("activity", "plan"):
                         await self.send(kind, **value)
                         continue
                     item = value.get("itemId") or value.get("id")

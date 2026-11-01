@@ -116,3 +116,71 @@ def test_tool_activity_does_not_expose_arguments(tmp_path):
     session.run(None, "Hi")
     assert [data["state"] for kind, data in events if kind == "activity"] == ["running", "returned"]
     assert "private" not in repr(events)
+
+
+def test_resume_applies_effective_selection_and_native_images(tmp_path):
+    calls = []
+
+    class NativeClient(Client):
+        def set_model(self, provider, model):
+            calls.append(("model", provider, model))
+
+        def set_thinking_level(self, effort):
+            calls.append(("effort", effort))
+
+        def stream(self, text, images=None):
+            calls.append(("prompt", text, images))
+            return Stream()
+
+    config = SimpleNamespace(
+        history_dir=tmp_path / "history",
+        workspace=tmp_path,
+        model=None,
+        turn_selection={"provider": "local", "model": "default", "effort": "off"},
+    )
+    folder = config.history_dir / "pi-sessions"
+    folder.mkdir(parents=True)
+    thread = folder / "chat.jsonl"
+    thread.write_text("")
+    images = [{"type": "image", "mimeType": "image/png", "data": "fixture"}]
+    session = Session(config, lambda _: None, lambda _: None, client_factory=NativeClient)
+    session.run(str(thread), "Look", images=images)
+    assert calls == [("model", "local", "default"), ("effort", "off"), ("prompt", "Look", images)]
+
+
+def test_plan_tool_results_are_validated(tmp_path):
+    class PlanStream(Stream):
+        def __iter__(self):
+            plans = [
+                [{"step": "Working", "status": "in_progress"}],
+                [{"step": "Invalid", "status": "finished"}],
+            ]
+            return iter(
+                SimpleNamespace(
+                    text_delta=None,
+                    raw={
+                        "type": "tool_execution_end",
+                        "toolName": "update_plan",
+                        "isError": False,
+                        "result": {"details": {"steps": steps}},
+                    },
+                )
+                for steps in plans
+            )
+
+    class PlanClient(Client):
+        def stream(self, text):
+            return PlanStream()
+
+    events = []
+    config = SimpleNamespace(history_dir=tmp_path, workspace=tmp_path, model=None)
+    Session(
+        config,
+        lambda _: None,
+        lambda _: None,
+        client_factory=PlanClient,
+        message_event=lambda kind, value: events.append((kind, value)),
+    ).run(None, "Work")
+    assert [value for kind, value in events if kind == "plan"] == [
+        {"steps": [{"step": "Working", "status": "in_progress"}]}
+    ]
