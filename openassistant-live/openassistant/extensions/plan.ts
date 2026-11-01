@@ -9,13 +9,14 @@ export default function (pi: ExtensionAPI) {
     description: "Publish or update a short task plan. Use at most one in_progress step.",
     parameters: Type.Object({
       steps: Type.Array(Type.Object({
-        step: Type.String({ minLength: 1, maxLength: 240 }),
+        step: Type.String({ minLength: 1, maxLength: 240, pattern: "\\S" }),
         status: Type.Union([
           Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"),
         ]),
       }), { maxItems: 20 }),
     }),
     async execute(_id, { steps }) {
+      if (steps.some(step => !step.step.trim())) throw new Error("Plan steps cannot be blank");
       if (steps.filter(step => step.status === "in_progress").length > 1) {
         throw new Error("Only one step can be in progress");
       }

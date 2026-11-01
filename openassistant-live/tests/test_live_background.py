@@ -282,7 +282,6 @@ async def test_stopping_before_turn_starts_releases_chat_and_prevents_snapshot_r
         await ws.send_json({"type": "new_conversation"})
         first_chat = (await event(ws, "conversation"))["id"]
         await ws.send_json({"type": "prompt", "text": "First task"})
-        await event(ws, "start")
         await waiting.wait()
         await ws.send_json({"type": "stop"})
         await event(ws, "stopped")

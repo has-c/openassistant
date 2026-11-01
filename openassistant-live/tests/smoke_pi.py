@@ -6,6 +6,7 @@ generates two replies and calls only the bundled update_plan tool as requested.
 
 import asyncio
 import base64
+import os
 import struct
 import tempfile
 import zlib
@@ -59,6 +60,13 @@ async def event(ws, kind):
 
 
 async def main():
+    fail_discovery = os.environ.get("OPENASSISTANT_SMOKE_NO_DISCOVERY") == "1"
+    if fail_discovery:
+
+        async def unavailable(*args):
+            raise TimeoutError("Synthetic discovery failure")
+
+        live.model_options = unavailable
     live.LiveTranscriber = NoSpeech
     Speech.fetch = no_audio
 
@@ -84,13 +92,14 @@ async def main():
             await event(ws, "ready")
             await ws.send_json({"type": "new_conversation"})
             chat = (await event(ws, "conversation"))["id"]
-            await ws.send_json({"type": "model_list", "conversation": chat})
-            options = await event(ws, "model_options")
-            assert options["images"], "Use an image-capable test model"
-            await ws.send_json(
-                {"type": "model_select", "conversation": chat, "model": options["effective"]}
-            )
-            await event(ws, "model_options")
+            if not fail_discovery:
+                await ws.send_json({"type": "model_list", "conversation": chat})
+                options = await event(ws, "model_options")
+                assert options["images"], "Use an image-capable test model"
+                await ws.send_json(
+                    {"type": "model_select", "conversation": chat, "model": options["effective"]}
+                )
+                await event(ws, "model_options")
             await ws.send_json(
                 {
                     "type": "prompt",
@@ -123,7 +132,8 @@ async def main():
             assert history.get(chat)["thread"] == thread
             await ws.close()
     print(
-        "PASS real Pi: discovery, selection, native image, plan tool, history, Default and resume"
+        "PASS real Pi: native image, plan, history, Default and resume; "
+        + ("discovery unavailable" if fail_discovery else "discovery and selection")
     )
 
 

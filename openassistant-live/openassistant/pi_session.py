@@ -1,13 +1,23 @@
 """Pi SDK adapter for the browser conversation runtime."""
 
+import json
+import logging
 import uuid
 from pathlib import Path
 from threading import Event, Lock
 
 from pi_agent import PiClient
 from pi_agent.errors import PiError
+from pi_agent.types import Limits
 
+from .models import describe
 from .plan import plan_steps
+
+log = logging.getLogger(__name__)
+
+
+class TurnRejected(ValueError):
+    """Preparation failed before any prompt was submitted."""
 
 
 class Session:
@@ -20,7 +30,13 @@ class Session:
         message_event=None,
         extra_instructions="",
         ui_handler=None,
+        ready=None,
+        activity=None,
+        catalogue=None,
     ):
+        self.ready = ready
+        self.activity = activity or (lambda: None)
+        self.catalogue = catalogue
         self.config = config
         self.saved_thread = saved_thread
         self.progress = progress
@@ -48,7 +64,7 @@ class Session:
             cwd=str(self.config.workspace),
             provider=getattr(self.config, "pi_provider", None),
             model=getattr(self.config, "model", None),
-            session=str(path) if path else None,
+            limits=Limits(cleanup_timeout=1),
             session_dir=str(directory),
             ui_handler=self.ui_handler,
             extra_args=[
@@ -67,18 +83,72 @@ class Session:
             with client:
                 if self.stopped.is_set():
                     raise RuntimeError("Task stopped")
-                selection = getattr(self.config, "turn_selection", None)
-                if selection:
-                    client.set_model(selection["provider"], selection["model"])
-                    client.set_thinking_level(selection["effort"])
+                try:
+                    # Capture Pi defaults before switching to a saved session, whose
+                    # persisted settings may belong to a different model.
+                    defaults = client.get_state()
+                    default = defaults.get("model")
+                    if not default:
+                        raise TurnRejected("Configure a default model in Pi first.")
+                    if path:
+                        switched = client.switch_session(str(path))
+                        if switched.get("cancelled"):
+                            raise TurnRejected("An extension cancelled opening this session.")
+                    selection = getattr(self.config, "turn_selection", None) or {}
+                    selected = selection.get("selected")
+                    provider, model = (
+                        json.loads(selected) if selected else (default["provider"], default["id"])
+                    )
+                    client.set_model(provider, model)
+                    levels = client.get_available_thinking_levels()
+                    effort = selection.get("effort")
+                    if effort is None:
+                        effort = defaults.get("thinkingLevel", "off")
+                        if effort not in levels:
+                            effort = levels[0]
+                    if effort not in levels:
+                        raise TurnRejected(
+                            "Saved thinking effort is unavailable. Reset it in the picker."
+                        )
+                    client.set_thinking_level(effort)
+                    effective = client.get_state().get("model")
+                    if images and (not effective or "image" not in effective.get("input", [])):
+                        raise TurnRejected(
+                            "This model cannot accept images. Choose an image model."
+                        )
+                except TurnRejected:
+                    raise
+                except Exception as error:
+                    raise TurnRejected(
+                        "Could not prepare this model. Retry or choose another model or Default."
+                    ) from error
+                self.activity()
+                # Refresh using the already-running process. Failure is non-fatal;
+                # no catalogue is needed to submit this turn.
+                if self.catalogue:
+                    try:
+                        models = client.get_available_models(timeout=1)
+                        options = describe(default, models, selected, levels, effort)
+                        # Cache the inherited value, not this chat's explicit override.
+                        options["effort"] = defaults.get("thinkingLevel", "off")
+                        if options["effort"] not in levels:
+                            options["effort"] = levels[0]
+                        self.catalogue(options)
+                    except Exception:
+                        log.debug("Session catalogue refresh unavailable")
+                if self.stopped.is_set():
+                    raise RuntimeError("Task stopped")
                 session_file = client.session.session_file
                 if not session_file or Path(session_file).resolve().parent != directory:
                     raise RuntimeError("Pi did not create a session in the expected directory")
+                if self.ready:
+                    self.ready()
                 self.progress({"activity": "Working"})
                 item_id = str(uuid.uuid4())
                 saved = False
                 with client.stream(text, **({"images": images} if images else {})) as stream:
                     for event in stream:
+                        self.activity()
                         if not saved and Path(session_file).is_file():
                             self.saved_thread(session_file)
                             saved = True
@@ -137,9 +207,13 @@ class Session:
             client = self.client
         if client:
             try:
-                client.abort()
+                client.abort(timeout=1)
             except PiError:
                 pass
+            finally:
+                # Public SDK close escalates EOF -> terminate -> kill, reaps Pi,
+                # and joins its reader loop. Cancelling an asyncio consumer cannot.
+                client.close()
 
     def steer(self, text):
         with self.lock:

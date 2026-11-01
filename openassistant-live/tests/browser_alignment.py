@@ -114,6 +114,11 @@ async def main():
             await expect(page.locator("#effort-current")).to_have_text("high")
             await page.keyboard.press("Escape")
             assert any(d.get("model") == IMAGE and d.get("effort") == "high" for d in sent)
+            await page.locator("#effort-trigger").click()
+            await page.get_by_role("button", name="Use default effort", exact=True).click()
+            await expect(page.locator("#effort-current")).to_have_text("off")
+            await page.keyboard.press("Escape")
+            assert any(d.get("type") == "effort_select" and d.get("effort") is None for d in sent)
             # A stale model response from another chat must not replace the header.
             sockets[0].send(
                 json.dumps({"type": "model_error", "conversation": "elsewhere", "text": "Stale"})
@@ -133,6 +138,7 @@ async def main():
                 json.dumps(
                     {
                         "type": "upload_error",
+                        "turn": 99,
                         "conversation": "chat",
                         "text": "Choose an image model",
                     }

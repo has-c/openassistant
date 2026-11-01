@@ -70,14 +70,24 @@ class Conversations:
             ).fetchone()
         return row[0] if row else None
 
-    def set_selection(self, identifier, selected, effective, effort):
+    def set_model(self, identifier, selected):
         self.get(identifier)
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO chat_settings VALUES (?, ?)", (identifier, selected))
-            db.execute(
-                "INSERT OR REPLACE INTO model_efforts VALUES (?, ?, ?)",
-                (identifier, effective, effort),
-            )
+
+    def set_effort(self, identifier, model, effort):
+        self.get(identifier)
+        with self.connect() as db:
+            if effort is None:
+                db.execute(
+                    "DELETE FROM model_efforts WHERE conversation=? AND model=?",
+                    (identifier, model),
+                )
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO model_efforts VALUES (?, ?, ?)",
+                    (identifier, model, effort),
+                )
 
     def save_plan(self, identifier, steps):
         with self.connect() as db:
@@ -255,7 +265,13 @@ class Conversations:
                                     (identifier, digest),
                                 ).fetchone()
                             if row:
-                                images.append(dict(row))
+                                images.append(
+                                    {
+                                        "id": row["id"],
+                                        "alt": row["alt"],
+                                        "path": f"/upload/{row['id']}",
+                                    }
+                                )
                             else:
                                 # Pi may resize images before persisting its native history.
                                 # Retain that version too, scoped to this registered chat.

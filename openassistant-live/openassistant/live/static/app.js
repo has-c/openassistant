@@ -332,14 +332,14 @@ function renderInbox(items) {
   if (fingerprint === inboxFingerprint) return;
   inboxFingerprint = fingerprint;
   const list = $('inbox-list');
-  const keys = new Set(items.map(item => JSON.stringify([item.conversation, item.turn, item.pending.id, item.revision])));
+  const keys = new Set(items.map(item => JSON.stringify([item.conversation, item.turn, item.pending.id])));
   const hasNewRequest = [...keys].some(key => !inboxTickets.has(key));
   if (hasNewRequest) approvalBell();
   for (const [key, ticket] of inboxTickets) {
     if (!keys.has(key)) { ticket.remove(); inboxTickets.delete(key); }
   }
   for (const item of items) {
-    const key = JSON.stringify([item.conversation, item.turn, item.pending.id, item.revision]);
+    const key = JSON.stringify([item.conversation, item.turn, item.pending.id]);
     const existing = inboxTickets.get(key);
     if (existing) {
       existing.querySelector('h3').textContent = item.title || 'Conversation';
@@ -536,6 +536,12 @@ function connect() {
       send(conversationId ? {type:'open_conversation', id:conversationId} : {type:'new_conversation'});
       return;
     }
+    if (data.type === 'upload_error') {
+      if (sendingEntry) { textQueue.unshift(sendingEntry); sendingEntry = null; }
+      busy = false; queuePaused = true; taskState('failed', data.text);
+      controls(true); renderQueue(); notice(data.text);
+    }
+    if (data.type === 'upload_error') return;
     if (data.type === 'start' && !ignore) {
       observing = !!data.observer; sendingEntry = null;
       if (observing) { queuePaused = true; microphone.disable(); }
@@ -572,11 +578,6 @@ function connect() {
       clips.push(new Blob([Uint8Array.from(atob(data.data), char => char.charCodeAt(0))], {type:'audio/ogg'})); play();
     }
     if (data.type === 'notice' && data.text !== 'Voice unavailable; captions are still available.') notice(data.text);
-    if (data.type === 'upload_error') {
-      if (sendingEntry) { textQueue.unshift(sendingEntry); sendingEntry = null; }
-      busy = false; queuePaused = true; taskState('failed', data.text);
-      controls(true); renderQueue(); notice(data.text);
-    }
     if (data.type === 'done') {
       if (taskPhase === 'failed') queuePaused = true;
       if (!player) $('status').textContent = microphone.enabled ? 'Listening' : 'Ready';

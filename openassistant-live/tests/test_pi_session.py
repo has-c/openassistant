@@ -32,6 +32,27 @@ class Client:
     def __exit__(self, *args):
         pass
 
+    def get_state(self):
+        return {
+            "model": getattr(
+                self, "model", {"provider": "local", "id": "default", "input": ["text", "image"]}
+            ),
+            "thinkingLevel": "off",
+        }
+
+    def set_model(self, provider, model):
+        self.model = {"provider": provider, "id": model, "input": ["text", "image"]}
+
+    def set_thinking_level(self, effort):
+        pass
+
+    def get_available_thinking_levels(self):
+        return ["off", "high"]
+
+    def switch_session(self, path):
+        self.session.session_file = path
+        return {"cancelled": False}
+
     def stream(self, text):
         return Stream()
 
@@ -136,7 +157,7 @@ def test_resume_applies_effective_selection_and_native_images(tmp_path):
         history_dir=tmp_path / "history",
         workspace=tmp_path,
         model=None,
-        turn_selection={"provider": "local", "model": "default", "effort": "off"},
+        turn_selection={"selected": '["local","default"]', "effort": "off"},
     )
     folder = config.history_dir / "pi-sessions"
     folder.mkdir(parents=True)

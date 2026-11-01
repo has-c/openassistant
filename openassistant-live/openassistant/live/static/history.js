@@ -37,7 +37,7 @@ function renderModelOptions(data) {
     options.replaceChildren();
     for (const [label, type] of [['Retry', 'model_list'], ['Use Default', 'model_select']]) {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
-      button.onclick = () => send({type, conversation:conversationId, model:null}); options.append(button);
+      button.onclick = () => send({type, conversation:conversationId, model:null, refresh:true}); options.append(button);
     }
     modelErrorText = data.text; notice(data.text); return;
   }
@@ -45,7 +45,7 @@ function renderModelOptions(data) {
   modelErrorText = null;
   const selected = data.selected || '';
   effectiveModel = data.effective;
-  const current = data.models.find(m => m.id === effectiveModel)?.label || 'Default';
+  const current = data.unavailable ? 'Unavailable — choose model' : data.models.find(m => m.id === effectiveModel)?.label || 'Default';
   $('model-current').textContent = current;
   trigger.title = `Model for this chat: ${current}`;
   options.replaceChildren();
@@ -62,8 +62,13 @@ function renderModelOptions(data) {
     };
     options.append(button);
   }
+  const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = 'Refresh models';
+  refresh.onclick = () => send({type:'model_list', conversation:conversationId, refresh:true}); options.append(refresh);
   trigger.disabled = false;
   renderEffort(data);
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Use default effort';
+  reset.onclick = () => send({type:'effort_select', conversation:conversationId, model:effectiveModel, effort:null});
+  $('effort-menu').querySelector('[data-effort-reset]')?.remove(); reset.dataset.effortReset = ''; $('effort-menu').append(reset);
 }
 window.addEventListener('DOMContentLoaded', () => {
   const trigger = $('chat-model'), menu = $('model-menu');

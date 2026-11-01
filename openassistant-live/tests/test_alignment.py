@@ -80,6 +80,7 @@ async def test_settings_are_atomic_shared_and_apply_to_next_turn(config, monkeyp
     turns, finish = [], asyncio.Event()
 
     async def run(self, prompt, recording):
+        await self.send("start")
         turns.append(deepcopy(self.turn_selection))
         await finish.wait()
         await self.send("task", state="finished", text="Done")
@@ -175,28 +176,49 @@ async def test_inbox_multiple_requests_survive_navigation_and_reject_observers(c
 
 
 async def test_image_submission_rejects_text_model_and_accepts_image_only(config, monkeypatch):
+    from test_pi_session import Client, Stream
+
+    from openassistant.live import call as runtime
+    from openassistant.pi_session import Session
+
     received = []
 
-    async def run(self, prompt, recording):
-        received.append((prompt, self.attachments))
-        await self.send("task", state="finished", text="Done")
+    class NativeClient(Client):
+        def set_model(self, provider, model):
+            self.model = {
+                "provider": provider,
+                "id": model,
+                "input": ["text", "image"] if provider == "two" else ["text"],
+            }
 
-    monkeypatch.setattr(live.Call, "run", run)
+        def stream(self, text, images=None):
+            received.append((text, images))
+            return Stream()
+
+    monkeypatch.setattr(
+        runtime, "Session", lambda *a, **k: Session(*a, client_factory=NativeClient, **k)
+    )
     async with TestClient(TestServer(live.create_app(config))) as client:
         ws = await connect(client)
         chat = await open_chat(ws)
         await ws.send_json({"type": "prompt", "text": "", "images": [PNG]})
         assert "cannot accept images" in (await event(ws, "upload_error"))["text"]
+        await event(ws, "turn_ready")
+        history = Conversations(config.history_dir, config.workspace)
+        assert history.get(chat)["thread"] is None
+        with history.connect() as db:
+            assert db.execute("SELECT count(*) FROM images").fetchone()[0] == 0
         assert not received
         await choose(ws, chat, VISION)
         await ws.send_json({"type": "prompt", "text": "", "images": [PNG, "broken"]})
         await event(ws, "upload_error")
         assert not (config.history_dir / "uploads").exists()
         await ws.send_json({"type": "prompt", "text": "", "images": [PNG]})
+        user = await event(ws, "user")
         await event(ws, "turn_ready")
         assert received[0][0] == "" and len(received[0][1]) == 1
-        identifier = received[0][1][0]["id"]
-        history = Conversations(config.history_dir, config.workspace)
+        identifier = user["images"][0]["id"]
+        assert user["images"][0]["path"].startswith("/upload/")
         assert history.image(chat, identifier) is not None
         assert history.image(history.create()["id"], identifier) is None
 
@@ -278,7 +300,7 @@ async def test_real_adapter_uses_provider_ids_and_runtime_levels():
 
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs["no_session"] and "--no-extensions" in kwargs["extra_args"]
+            assert kwargs["no_session"] and "--no-extensions" not in kwargs["extra_args"]
             self.model = models[0]
             clients.append(self)
 

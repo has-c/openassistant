@@ -6,7 +6,6 @@ import hashlib
 import os
 import re
 import stat
-import uuid
 from io import BytesIO
 from pathlib import Path
 
@@ -59,36 +58,37 @@ def validate_upload(encoded):
     return data, mime
 
 
-def save_upload(history, conversation, encoded):
-    """Validate and privately retain one browser image for the native SDK and history."""
+def prepare_uploads(encoded_images):
+    """Fully validate a batch off-loop without persisting rejected input."""
+    if not isinstance(encoded_images, list) or not 1 <= len(encoded_images) <= 5:
+        raise ValueError("Attach between one and five images.")
+    return [validate_upload(encoded) for encoded in encoded_images]
+
+
+def retain_uploads(history, conversation, uploads):
+    """Persist an already validated, accepted batch in one transaction."""
     if not history or not conversation:
         raise ValueError("Image history is unavailable.")
-    data, mime = validate_upload(encoded)
-    folder = history.path.parent / "uploads" / conversation
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    suffix = {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-    }[mime]
-    path = folder / (uuid.uuid4().hex + suffix)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-    identifier = hashlib.sha256(data).hexdigest()
-    history.save_image(conversation, "uploads", identifier, str(path), "Attached image", mime, data)
-    return {"id": identifier, "path": str(path), "alt": "Attached image"}
+    history.get(conversation)
+    attachments = []
+    with history.connect() as db:
+        for data, mime in uploads:
+            identifier = hashlib.sha256(data).hexdigest()
+            path = f"/upload/{identifier}"
+            db.execute(
+                "INSERT OR REPLACE INTO images VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (conversation, "uploads", identifier, path, "Attached image", mime, data),
+            )
+            attachments.append({"id": identifier, "path": path, "alt": "Attached image"})
+    return attachments
+
+
+def save_upload(history, conversation, encoded):
+    return save_uploads(history, conversation, [encoded])[0]
 
 
 def save_uploads(history, conversation, encoded_images):
-    """Validate a browser image batch before retaining its individual uploads."""
-    if not isinstance(encoded_images, list) or not 1 <= len(encoded_images) <= 5:
-        raise ValueError("Attach between one and five images.")
-    # Reject invalid batches before writing any files.
-    for encoded in encoded_images:
-        validate_upload(encoded)
-    return [save_upload(history, conversation, encoded) for encoded in encoded_images]
+    return retain_uploads(history, conversation, prepare_uploads(encoded_images))
 
 
 def capture_images(history, conversation, item, text):

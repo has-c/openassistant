@@ -16,11 +16,11 @@ from aiohttp import WSMsgType, web
 from aiohttp.client_exceptions import ClientError
 from pi_agent import AsyncPiClient
 
-from ..models import model_options
+from ..models import ModelCatalogue, model_options
 from .asr import LiveTranscriber, RemoteTranscriber
 from .call import Call
 from .history import Conversations
-from .images import save_uploads
+from .images import prepare_uploads
 
 STATIC = Path(__file__).with_name("static")
 log = logging.getLogger(__name__)
@@ -58,29 +58,68 @@ def create_app(config):
     preparing = set()
     serials = itertools.count(1)
     title_tasks = {}
-    selection_lock = asyncio.Lock()
+    picker_tasks = set()
+    catalogue = ModelCatalogue(config, discover=model_options)
+    selection_locks = {}
 
-    async def selection(identifier, data=None):
-        # Validation and persistence form one operation, including concurrent tabs.
-        async with selection_lock:
+    async def selection(identifier, data):
+        # Only this chat's picker operations serialize; turns never acquire this lock.
+        lock = selection_locks.setdefault(identifier, asyncio.Lock())
+        async with lock:
             selected = history.model(identifier)
-            if data and data["type"] == "model_select":
+            kind = data["type"]
+            if kind == "model_select":
                 selected = data.get("model")
                 if selected is not None and (not isinstance(selected, str) or len(selected) > 500):
                     raise ValueError("Invalid model selection")
-            options = await model_options(config, selected)
-            effort = history.effort(identifier, options["effective"])
-            if data and data["type"] == "effort_select":
+                # Default reset remains available when discovery is down.
+                if selected is None:
+                    history.set_model(identifier, None)
+            try:
+                options = await catalogue.options(selected, refresh=bool(data.get("refresh")))
+            except Exception:
+                if kind != "model_select" or selected is not None:
+                    raise
+                # The preference reset succeeded even if capability discovery did not.
+                options = {
+                    "selected": None,
+                    "effective": None,
+                    "default": None,
+                    "models": [],
+                    "levels": [],
+                    "effort": None,
+                }
+
+            if kind == "model_select":
+                if options.get("unavailable"):
+                    raise ValueError("Selected model unavailable")
+                history.set_model(identifier, selected)
+            effort_key = selected or ""
+            if kind == "effort_select":
                 if data.get("model") != options["effective"]:
                     raise ValueError("The model changed. Choose thinking effort again.")
                 effort = data.get("effort")
-                if effort not in options["levels"]:
+                if effort is not None and effort not in options["levels"]:
                     raise ValueError("Unsupported thinking effort")
-            if effort not in options["levels"]:
-                effort = options["effort"]
-            options["effort"] = effort
-            history.set_selection(identifier, selected, options["effective"], effort)
+                history.set_effort(identifier, effort_key, effort)
+            effort = history.effort(identifier, effort_key)
+            options["inherited"] = effort is None
+            if effort is not None:
+                options["effort"] = effort
             return options
+
+    async def picker(call, identifier, data):
+        try:
+            options = await selection(identifier, data)
+        except Exception:
+            if call.conversation == identifier:
+                await call.send(
+                    "model_error", text="Could not load or change models. Retry or choose Default."
+                )
+        else:
+            for peer in tuple(calls):
+                if peer.conversation == identifier:
+                    await peer.send("model_options", **options)
 
     async def update_title(identifier, version):
         try:
@@ -144,8 +183,11 @@ def create_app(config):
                             "pending": pending,
                         }
                     )
-        async with asyncio.timeout(2):
-            await peer.ws.send_json({"type": "pending_inbox", "items": items})
+        try:
+            async with asyncio.timeout(2):
+                await peer.ws.send_json({"type": "pending_inbox", "items": items})
+        except (ClientError, ConnectionError, TimeoutError):
+            log.debug("Pending inbox delivery unavailable")
 
     async def pending_changed():
         await asyncio.gather(*(pending_for(peer) for peer in tuple(calls)), return_exceptions=True)
@@ -248,19 +290,9 @@ def create_app(config):
                     if not call.conversation or data.get("conversation") != call.conversation:
                         await call.send("notice", text="Open a chat first.")
                         continue
-                    try:
-                        options = await selection(call.conversation, data)
-                    except Exception:
-                        await call.send(
-                            "model_error",
-                            text="Could not load or change models. "
-                            "Selection unchanged; retry or choose Default.",
-                        )
-                    else:
-                        await call.send("model_options", **options)
-                        for peer in tuple(calls):
-                            if peer is not call and peer.conversation == call.conversation:
-                                await peer.send("model_options", **options)
+                    task = asyncio.create_task(picker(call, call.conversation, data))
+                    picker_tasks.add(task)
+                    task.add_done_callback(picker_tasks.discard)
                     continue
                 if history and kind == "pending_inbox":
                     await pending_for(call)
@@ -482,38 +514,31 @@ def create_app(config):
                         or (not prompt.strip() and not encoded)
                     ):
                         continue
-                    # Reserve before discovery awaits, so two first turns cannot fork a chat.
                     if history:
                         preparing.add(call.conversation)
                     try:
-                        call.turn_selection = (
-                            await selection(call.conversation) if history else None
+                        selected = history.model(call.conversation) if history else None
+                        call.turn_selection = {
+                            "selected": selected,
+                            "effort": history.effort(call.conversation, selected or "")
+                            if history
+                            else None,
+                        }
+                        call.catalogue = catalogue
+                        call.uploads = (
+                            await asyncio.to_thread(prepare_uploads, encoded)
+                            if encoded is not None
+                            else []
                         )
-                        call.attachments = []
-                        if encoded:
-                            if not call.turn_selection or not call.turn_selection["images"]:
-                                raise ValueError(
-                                    "This model cannot accept images. Choose an image model."
-                                )
-                            call.attachments = await asyncio.to_thread(
-                                save_uploads, history, call.conversation, encoded
-                            )
-                    except Exception as error:
-                        await call.send(
-                            "upload_error",
-                            text=(
-                                str(error)
-                                if isinstance(error, ValueError)
-                                else "Could not prepare this message. Check the model and retry."
-                            ),
-                        )
+                    except (ValueError, TypeError) as error:
+                        await call.send("upload_error", text=str(error))
                         continue
                     finally:
                         preparing.discard(call.conversation)
+                    call.snapshot = {}
                     call.serial = next(serials)
                     if history:
                         active[call.conversation] = call
-                    await call.send("start")
                     call.task = asyncio.create_task(
                         run_turn(call, prompt, message.data if kind == "recording" else None)
                     )
@@ -538,6 +563,9 @@ def create_app(config):
         return web.json_response({"access_required": not getattr(config, "tailnet_only", False)})
 
     async def shutdown(app):
+        for task in tuple(picker_tasks):
+            task.cancel()
+        await asyncio.gather(*picker_tasks, return_exceptions=True)
         for task in list(title_tasks.values()):
             task.cancel()
         await asyncio.gather(*list(title_tasks.values()), return_exceptions=True)
@@ -557,7 +585,7 @@ def create_app(config):
         if history:
             history.interrupt_tasks()
 
-    app = web.Application(middlewares=[headers], client_max_size=30_000_000)
+    app = web.Application(middlewares=[headers], client_max_size=1_048_576)
     app.router.add_get("/", index)
     app.router.add_get("/ws", socket)
     app.router.add_get("/client-config", client_config)

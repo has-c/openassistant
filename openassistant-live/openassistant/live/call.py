@@ -10,12 +10,13 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from threading import Lock
 
 from aiohttp.client_exceptions import ClientError
 
-from ..pi_session import Session
+from ..pi_session import Session, TurnRejected
 from ..speech import Speech
-from .images import capture_images
+from .images import capture_images, retain_uploads
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ class Call:
         self.pending_changed = None
         self.turn_selection = None
         self.attachments = []
+        self.uploads = []
+        self.catalogue = None
+        self.last_activity = 0
+        self.accepted = False
 
     def remember(self, kind, data):
         if kind == "start":
@@ -194,6 +199,7 @@ class Call:
         except TimeoutError:
             return None
         finally:
+            self.last_activity = asyncio.get_running_loop().time()
             self.pending_ui.pop(token, None)
             self.snapshot["pending_ui"] = [entry[1] for entry in self.pending_ui.values()]
             await self.send("input_closed", id=token)
@@ -262,22 +268,61 @@ class Call:
         loop = asyncio.get_running_loop()
         events = asyncio.Queue(maxsize=128)
         voice = asyncio.Queue(maxsize=16)
-        worker = speaker = None
+        worker = speaker = watchdog = None
         active = True
         started = loop.time()
+        self.last_activity = started
+        self.accepted = False
         first_audio = True
         stage = "starting"
+        bridge_lock = Lock()
+        bridge_waiters = set()
 
         def bridge(coro):
-            if not active:
-                coro.close()
-                raise RuntimeError("Call ended.")
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            with bridge_lock:
+                if not active:
+                    coro.close()
+                    raise RuntimeError("Call ended.")
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+                bridge_waiters.add(future)
             try:
                 return future.result(timeout=130)
             except BaseException:
                 future.cancel()
                 raise
+            finally:
+                with bridge_lock:
+                    bridge_waiters.discard(future)
+
+        async def accept():
+            if self.uploads:
+                self.attachments = await asyncio.to_thread(
+                    retain_uploads, self.history, self.conversation, self.uploads
+                )
+            else:
+                self.attachments = []
+            self.accepted = True
+            await self.send("start")
+            await self.send("user", text=prompt, images=self.attachments)
+            await self.send("task", state="working", text="Working on your request")
+
+        def activity():
+            loop.call_soon_threadsafe(touch)
+
+        def touch():
+            self.last_activity = loop.time()
+
+        async def watch():
+            seconds = getattr(self.config, "inactivity_timeout", 1800)
+            if not seconds:
+                return
+            while True:
+                await asyncio.sleep(min(seconds, 1))
+                if self.pending_ui:
+                    self.last_activity = loop.time()
+                elif loop.time() - self.last_activity >= seconds:
+                    await events.put(("failed", TimeoutError("Pi inactivity timeout")))
+                    return
 
         async def speak():
             nonlocal first_audio
@@ -320,8 +365,6 @@ class Call:
                         stage="transcription",
                         milliseconds=round((loop.time() - started) * 1000),
                     )
-                await self.send("user", text=prompt, images=self.attachments)
-                await self.send("task", state="working", text="Working on your request")
                 stage = "agent"
                 turn_config = copy.copy(self.config)
                 turn_config.turn_selection = self.turn_selection
@@ -331,6 +374,13 @@ class Call:
                     lambda value: bridge(events.put(("progress", value))),
                     message_event=lambda kind, value: bridge(events.put((kind, value))),
                     ui_handler=lambda request: bridge(self.request_ui(request)),
+                    ready=lambda: bridge(accept()),
+                    activity=activity,
+                    catalogue=(
+                        lambda options: loop.call_soon_threadsafe(self.catalogue.offer, options)
+                    )
+                    if self.catalogue
+                    else None,
                     extra_instructions=(
                         "\nThis turn is in the OpenAssistant voice app. "
                         "Replies appear here and are spoken automatically. Use short natural "
@@ -347,13 +397,12 @@ class Call:
                 async def generate():
                     try:
                         images = []
-                        for attachment in self.attachments:
-                            row = self.history.image(self.conversation, attachment["id"])
+                        for data, mime in self.uploads:
                             images.append(
                                 {
                                     "type": "image",
-                                    "mimeType": row["mime"],
-                                    "data": base64.b64encode(row["data"]).decode("ascii"),
+                                    "mimeType": mime,
+                                    "data": base64.b64encode(data).decode("ascii"),
                                 }
                             )
                         result = await asyncio.to_thread(
@@ -362,12 +411,15 @@ class Call:
                             prompt,
                             **({"images": images} if images else {}),
                         )
-                        await events.put(("result", result))
+                        if active:
+                            await events.put(("result", result))
                     except Exception as error:
-                        await events.put(("failed", error))
+                        if active:
+                            await events.put(("failed", error))
 
                 worker = asyncio.create_task(generate())
                 speaker = asyncio.create_task(speak())
+                watchdog = asyncio.create_task(watch())
                 buffers, size = {}, 0
                 while True:
                     kind, value = await events.get()
@@ -408,7 +460,15 @@ class Call:
                 await self.send("done")
         except asyncio.CancelledError:
             raise
+        except TurnRejected as error:
+            await self.send("upload_error", text=str(error))
         except Exception as error:
+            if not self.accepted:
+                await self.send(
+                    "upload_error",
+                    text="Could not prepare this message. Check the model and retry.",
+                )
+                return
             reference = uuid.uuid4().hex[:10]
             log.warning(
                 "Live turn failed ref=%s type=%s stage=%s",
@@ -419,7 +479,14 @@ class Call:
             # A disconnected browser cannot receive an error notification.
             with contextlib.suppress(ClientError, ConnectionError):
                 await self.send(
-                    "task", state="failed", text=f"Task stopped. Reference {reference}."
+                    "task",
+                    state="failed",
+                    text=(
+                        "Task stopped after no Pi progress. "
+                        "Adjust --inactivity-timeout for silent tools."
+                        if isinstance(error, TimeoutError)
+                        else f"Task stopped. Reference {reference}."
+                    ),
                 )
                 await self.send(
                     "notice",
@@ -428,12 +495,26 @@ class Call:
                 )
                 await self.send("done")
         finally:
-            active = False
+            with bridge_lock:
+                active = False
+                for future in tuple(bridge_waiters):
+                    future.cancel()
+            # Unblock a producer already waiting to enqueue its terminal result.
+            while not events.empty():
+                events.get_nowait()
+            for future, _ in list(self.pending_ui.values()):
+                if not future.done():
+                    future.set_result(None)
             if self.session:
                 await asyncio.to_thread(self.session.stop)
-            for task in (worker, speaker):
+            # Session.close has reaped the child. Join the actual run worker
+            # before releasing capacity; cancelling to_thread would leave it alive.
+            if worker:
+                await worker
+            for task in (speaker, watchdog):
                 if task:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
             self.session = None
+            self.uploads = []

@@ -62,7 +62,10 @@ Chats groups active work first. Requests collects your browser's pending Pi
 extension confirmations and questions across conversations. You can attach or
 paste up to five images per message (4 MiB each) when the selected model accepts
 images. Multi-step work can publish a task plan, and tasks have no fixed overall
-time limit. Stop remains available; disconnecting leaves accepted work running.
+time limit. A configurable inactivity watchdog stops Pi after 30 minutes without
+progress; extension answer waits pause it. Set `--inactivity-timeout 0` to disable,
+or choose a longer duration for silent tools. Stop remains available; disconnecting
+leaves accepted work running.
 
 Double-tap Control to toggle the microphone, or Alt/Option to stop a task.
 Ctrl/Command+Enter sends guidance from the composer or confirms a focused request.
