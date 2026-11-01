@@ -64,7 +64,7 @@ async def test_cache_deduplicates_expires_and_accepts_session_refresh():
     cache = ModelCatalogue(None, discover, ttl=300)
     results = await asyncio.gather(*(cache.options(None) for _ in range(5)))
     assert len(calls) == 1 and all(r["value"] == 1 for r in results)
-    cache.entries[None] = (0, results[0])
+    cache.entries[None] = (cache.entries[None][0] - cache.ttl - 1, results[0])
     assert (await cache.options(None))["value"] == 2
     cache.offer({"selected": None, "value": 9})
     assert (await cache.options(None))["value"] == 9
