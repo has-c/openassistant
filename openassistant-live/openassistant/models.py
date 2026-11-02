@@ -33,6 +33,7 @@ async def model_options(config, selected=None, client_factory=AsyncPiClient):
                 return describe(default, models, selected, [], None, unavailable=True)
             model = catalogue[key]
             await client.set_model(model["provider"], model["id"])
+            await client.set_thinking_level(state.get("thinkingLevel", "off"))
             levels = await client.get_available_thinking_levels()
             state = await client.get_state()
             return describe(default, models, selected, levels, state.get("thinkingLevel", "off"))

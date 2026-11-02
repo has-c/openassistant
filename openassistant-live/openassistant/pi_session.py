@@ -101,16 +101,19 @@ class Session:
                     )
                     client.set_model(provider, model)
                     levels = client.get_available_thinking_levels()
+                    # Let Pi clamp the current default using its own model rules,
+                    # independently of any effort restored from the saved session.
+                    client.set_thinking_level(defaults.get("thinkingLevel", "off"))
+                    inherited_effort = client.get_state().get("thinkingLevel", "off")
                     effort = selection.get("effort")
                     if effort is None:
-                        effort = defaults.get("thinkingLevel", "off")
-                        if effort not in levels:
-                            effort = levels[0]
+                        effort = inherited_effort
                     if effort not in levels:
                         raise TurnRejected(
                             "Saved thinking effort is unavailable. Reset it in the picker."
                         )
-                    client.set_thinking_level(effort)
+                    if effort != inherited_effort:
+                        client.set_thinking_level(effort)
                     effective = client.get_state().get("model")
                     if images and (not effective or "image" not in effective.get("input", [])):
                         raise TurnRejected(
@@ -130,9 +133,7 @@ class Session:
                         models = client.get_available_models(timeout=1)
                         options = describe(default, models, selected, levels, effort)
                         # Cache the inherited value, not this chat's explicit override.
-                        options["effort"] = defaults.get("thinkingLevel", "off")
-                        if options["effort"] not in levels:
-                            options["effort"] = levels[0]
+                        options["effort"] = inherited_effort
                         self.catalogue(options)
                     except Exception:
                         log.debug("Session catalogue refresh unavailable")

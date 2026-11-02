@@ -316,6 +316,8 @@ document.addEventListener('keydown', event => {
   const allow = ticket.querySelector('.inbox-allow:not(:disabled)');
   if (!form && !allow) return;
   event.preventDefault();
+  const button = document.activeElement?.closest('button');
+  if (form && button && form.contains(button)) { button.click(); return; }
   if (form) form.requestSubmit(); else allow.click();
 });
 function renderInbox(items) {
@@ -549,6 +551,9 @@ function connect() {
       taskState('working', 'Speaking over OpenAssistant stops this task. Sound off keeps it running.');
     }
     if (data.type === 'stopped') {
+      if (sendingEntry) {
+        textQueue.unshift(sendingEntry); sendingEntry = null; queuePaused = true; renderQueue();
+      }
       observing = false;
       ignore = false; busy = false; $('status').textContent = microphone.enabled ? 'Listening' : 'Ready';
       if (!['finished','failed'].includes(taskPhase)) {

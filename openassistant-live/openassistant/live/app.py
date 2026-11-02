@@ -26,6 +26,10 @@ STATIC = Path(__file__).with_name("static")
 log = logging.getLogger(__name__)
 
 
+class SelectionRejected(ValueError):
+    """A picker validation message that is safe to show to the user."""
+
+
 async def generate_title(config, messages):
     excerpt = "\n".join(f"{item['who']}: {item['text'][:1200]}" for item in messages[-4:])
     if not excerpt:
@@ -71,7 +75,7 @@ def create_app(config):
             if kind == "model_select":
                 selected = data.get("model")
                 if selected is not None and (not isinstance(selected, str) or len(selected) > 500):
-                    raise ValueError("Invalid model selection")
+                    raise SelectionRejected("Invalid model selection")
                 # Default reset remains available when discovery is down.
                 if selected is None:
                     history.set_model(identifier, None)
@@ -92,15 +96,15 @@ def create_app(config):
 
             if kind == "model_select":
                 if options.get("unavailable"):
-                    raise ValueError("Selected model unavailable")
+                    raise SelectionRejected("Selected model unavailable")
                 history.set_model(identifier, selected)
             effort_key = selected or ""
             if kind == "effort_select":
                 if data.get("model") != options["effective"]:
-                    raise ValueError("The model changed. Choose thinking effort again.")
+                    raise SelectionRejected("The model changed. Choose thinking effort again.")
                 effort = data.get("effort")
                 if effort is not None and effort not in options["levels"]:
-                    raise ValueError("Unsupported thinking effort")
+                    raise SelectionRejected("Unsupported thinking effort")
                 history.set_effort(identifier, effort_key, effort)
             effort = history.effort(identifier, effort_key)
             options["inherited"] = effort is None
@@ -111,11 +115,20 @@ def create_app(config):
     async def picker(call, identifier, data):
         try:
             options = await selection(identifier, data)
-        except Exception:
+        except Exception as error:
+            reference = uuid.uuid4().hex[:10]
+            log.warning(
+                "Live preparation failed ref=%s type=%s stage=picker",
+                reference,
+                type(error).__name__,
+            )
             if call.conversation == identifier:
-                await call.send(
-                    "model_error", text="Could not load or change models. Retry or choose Default."
+                message = (
+                    str(error)
+                    if isinstance(error, SelectionRejected)
+                    else "Could not load or change models. Retry or choose Default."
                 )
+                await call.send("model_error", text=f"{message} Reference {reference}.")
         else:
             for peer in tuple(calls):
                 if peer.conversation == identifier:
@@ -256,7 +269,10 @@ def create_app(config):
                 try:
                     await task_call.run(prompt, recording)
                 except asyncio.CancelledError:
-                    if task_call.snapshot.get("state") not in ("finished", "failed"):
+                    if task_call.accepted and task_call.snapshot.get("state") not in (
+                        "finished",
+                        "failed",
+                    ):
                         await task_call.send("task", state="stopped", text="Task stopped")
                     raise
                 finally:
@@ -531,7 +547,13 @@ def create_app(config):
                             else []
                         )
                     except (ValueError, TypeError) as error:
-                        await call.send("upload_error", text=str(error))
+                        reference = uuid.uuid4().hex[:10]
+                        log.warning(
+                            "Live preparation failed ref=%s type=%s stage=upload",
+                            reference,
+                            type(error).__name__,
+                        )
+                        await call.send("upload_error", text=f"{error} Reference {reference}.")
                         continue
                     finally:
                         preparing.discard(call.conversation)

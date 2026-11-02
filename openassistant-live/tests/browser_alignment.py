@@ -147,6 +147,18 @@ async def main():
             await expect(page.locator("#text-queue")).to_contain_text("fixture.png")
             await expect(page.locator("#text-queue")).to_contain_text("Paused")
             await page.get_by_role("button", name="Remove", exact=True).click()
+            # Stop before acceptance preserves the entry and does not strand later sends.
+            await page.locator("#prompt").fill("Stop during preparation")
+            await page.locator("#send").click()
+            await page.wait_for_timeout(50)
+            sockets[0].send(json.dumps({"type": "stopped", "conversation": "chat"}))
+            await expect(page.locator("#text-queue")).to_contain_text("Stop during preparation")
+            await expect(page.locator("#text-queue")).to_contain_text("Paused")
+            await page.get_by_role("button", name="Remove", exact=True).click()
+            await page.locator("#prompt").fill("Next message")
+            await page.locator("#send").click()
+            await page.wait_for_timeout(50)
+            assert [d for d in sent if d.get("type") == "prompt"][-1]["text"] == "Next message"
             # Plans and requests render independently of the currently selected chat.
             sockets[0].send(json.dumps({"type": "start", "turn": 1, "conversation": "chat"}))
             sockets[0].send(
@@ -190,6 +202,19 @@ async def main():
             )
             sockets[0].send(json.dumps({"type": "pending_inbox", "items": []}))
             await expect(page.locator("#pending-inbox")).to_be_hidden()
+            for label, value in (("Decline", False), ("Cancel", None)):
+                for shortcut in ("Control+Enter", "Meta+Enter"):
+                    before = len([d for d in sent if d.get("type") == "global_answer"])
+                    sockets[0].send(json.dumps({"type": "pending_inbox", "items": [request]}))
+                    await page.locator("#inbox-list").get_by_role(
+                        "button", name=label, exact=True
+                    ).focus()
+                    await page.keyboard.press(shortcut)
+                    await page.wait_for_timeout(50)
+                    answers = [d for d in sent if d.get("type") == "global_answer"]
+                    assert len(answers) == before + 1 and answers[-1]["value"] is value
+                    sockets[0].send(json.dumps({"type": "pending_inbox", "items": []}))
+                    await expect(page.locator("#pending-inbox")).to_be_hidden()
             await page.locator("#toggle-history").click()
             await expect(page.locator("#saved-chats")).to_contain_text("Active")
             await page.locator("#older-chats").click()

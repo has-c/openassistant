@@ -20,6 +20,98 @@ from openassistant.models import ModelCatalogue, model_options
 from openassistant.pi_session import Session, TurnRejected
 
 
+@pytest.mark.parametrize("default,clamped", [("xhigh", "high"), ("off", "low")])
+@pytest.mark.parametrize("override", [None, "high"])
+def test_inherited_effort_uses_pi_clamp_after_resume(tmp_path, default, clamped, override):
+    clients, options = [], []
+
+    class Native(Client):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.effort = default
+            clients.append(self)
+
+        def get_state(self):
+            return {**super().get_state(), "thinkingLevel": self.effort}
+
+        def switch_session(self, path):
+            self.effort = "medium"
+            return super().switch_session(path)
+
+        def get_available_thinking_levels(self):
+            return ["low", "medium", "high"]
+
+        def set_thinking_level(self, value):
+            self.effort = clamped if value == default else value
+
+        def get_available_models(self, **kwargs):
+            return [{**self.get_state()["model"], "name": "Test"}]
+
+    folder = tmp_path / "pi-sessions"
+    folder.mkdir()
+    thread = folder / "resume.jsonl"
+    thread.write_text("")
+    config = SimpleNamespace(
+        history_dir=tmp_path,
+        workspace=tmp_path,
+        turn_selection={"selected": None, "effort": override},
+    )
+    Session(
+        config, lambda _: None, lambda _: None, client_factory=Native, catalogue=options.append
+    ).run(str(thread), "Hi")
+    assert clients[0].effort == (override or clamped)
+    assert options[0]["effort"] == clamped
+
+
+async def test_stop_before_acceptance_does_not_persist_task(tmp_path, monkeypatch):
+    preparing = asyncio.Event()
+
+    async def run(self, prompt, recording):
+        preparing.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(live.Call, "run", run)
+    config = SimpleNamespace(
+        origin="http://localhost",
+        access={},
+        tailnet_only=True,
+        history_dir=tmp_path,
+        workspace=tmp_path,
+    )
+    async with TestClient(TestServer(live.create_app(config))) as client:
+        ws = await connect(client)
+        chat = await open_chat(ws)
+        await ws.send_json({"type": "prompt", "text": "Keep this message"})
+        await asyncio.wait_for(preparing.wait(), 1)
+        await ws.send_json({"type": "stop"})
+        await event(ws, "stopped")
+        assert not Conversations(tmp_path, tmp_path).task_status(chat)
+
+
+async def test_picker_validation_and_upload_errors_have_references(tmp_path, caplog):
+    config = SimpleNamespace(
+        origin="http://localhost",
+        access={},
+        tailnet_only=True,
+        history_dir=tmp_path,
+        workspace=tmp_path,
+    )
+    async with TestClient(TestServer(live.create_app(config))) as client:
+        ws = await connect(client)
+        chat = await open_chat(ws)
+        await ws.send_json(
+            {"type": "effort_select", "conversation": chat, "model": "stale", "effort": "high"}
+        )
+        message = (await event(ws, "model_error"))["text"]
+        assert "The model changed" in message
+        reference = message.split("Reference ")[1].rstrip(".")
+        assert f"ref={reference}" in caplog.text and "stage=picker" in caplog.text
+        await ws.send_json({"type": "prompt", "text": "Hi", "images": ["invalid"]})
+        message = (await event(ws, "upload_error"))["text"]
+        reference = message.split("Reference ")[1].rstrip(".")
+        assert f"ref={reference}" in caplog.text and "stage=upload" in caplog.text
+
+
 @pytest.mark.parametrize("error_type", [TimeoutError, PiTimeoutError])
 async def test_rpc_and_bridge_timeouts_do_not_report_inactivity(error_type, monkeypatch, caplog):
     class TimedOut:

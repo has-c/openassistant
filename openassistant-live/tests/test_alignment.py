@@ -319,6 +319,9 @@ async def test_real_adapter_uses_provider_ids_and_runtime_levels():
         async def set_model(self, provider, model):
             self.model = next(m for m in models if m["provider"] == provider)
 
+        async def set_thinking_level(self, effort):
+            assert effort == "off"
+
         async def get_available_thinking_levels(self):
             return ["off", "high"] if self.model["provider"] == "b" else ["off"]
 
