@@ -53,6 +53,25 @@ python -m openassistant.live --access-file /path/to/access.json \
 
 Open `http://localhost:8766`. The app uses Pi's default provider and model; use `--pi-provider` and `--model` to select others. For local vLLM, configure a Pi provider for its OpenAI-compatible Chat Completions endpoint and served model.
 
+The header now lets you choose a model and thinking effort for each conversation.
+Choices come from Pi and apply to the next message, including queued messages;
+work already running keeps its settings. Default restores the configured app/Pi
+model. Use Pi CLI 1.3 or later for the bundled plan extension and thinking catalogue.
+
+Chats groups active work first. Requests collects your browser's pending Pi
+extension confirmations and questions across conversations. You can attach or
+paste up to five images per message (4 MiB each) when the selected model accepts
+images. Multi-step work can publish a task plan, and tasks have no fixed overall
+time limit. A configurable inactivity watchdog stops Pi after 30 minutes without
+progress; extension answer waits pause it. Set `--inactivity-timeout 0` to disable,
+or choose a longer duration for silent tools. Stop remains available; disconnecting
+leaves accepted work running.
+
+Double-tap Control to toggle the microphone, or Alt/Option to stop a task.
+Ctrl/Command+Enter sends guidance from the composer or confirms a focused request.
+These controls also work on reopened conversations; requests never take keyboard
+focus from your draft.
+
 See [preview setup](MIGRATION.md) for remote access, history, and service details.
 
 ## Tool access

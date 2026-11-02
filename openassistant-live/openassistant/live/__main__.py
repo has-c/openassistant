@@ -24,7 +24,8 @@ def main():
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--speech-endpoint", required=True)
     parser.add_argument(
-        "--whisper-endpoint", default=None,
+        "--whisper-endpoint",
+        default=None,
         help="Optional URL of the separate Whisper transcription service.",
     )
     parser.add_argument("--speech-voice", default="af_sky")
@@ -37,7 +38,15 @@ def main():
         default=Path.home() / ".local/share/openassistant/pi-history",
         help="Persistent conversation index and Pi session files.",
     )
+    parser.add_argument(
+        "--inactivity-timeout",
+        type=float,
+        default=1800,
+        help="Seconds without Pi progress before shutdown; 0 disables (default 1800).",
+    )
     args = parser.parse_args()
+    if not 0 <= args.inactivity_timeout < float("inf"):
+        parser.error("Inactivity timeout must be finite and non-negative.")
     if args.access_file and args.access_file.stat().st_mode & 0o077:
         parser.error("Access file must have mode 0600.")
     access = json.loads(args.access_file.read_text()) if args.access_file else {}

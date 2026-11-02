@@ -1,10 +1,14 @@
 """OpenAssistant metadata index and Pi session transcript reader."""
 
+import base64
+import hashlib
 import json
 import sqlite3
 import time
 import uuid
 from pathlib import Path
+
+from .images import validate_upload
 
 
 class Conversations:
@@ -33,12 +37,63 @@ class Conversations:
                 "PRIMARY KEY (conversation, item, path))"
             )
             db.execute("CREATE TABLE IF NOT EXISTS hidden_chats (id TEXT PRIMARY KEY)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS chat_settings "
+                "(conversation TEXT PRIMARY KEY, model TEXT)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS model_efforts (conversation TEXT, model TEXT, "
+                "effort TEXT, PRIMARY KEY (conversation, model))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS plans (conversation TEXT PRIMARY KEY, steps TEXT)"
+            )
         self.path.chmod(0o600)
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
         return db
+
+    def model(self, identifier):
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT model FROM chat_settings WHERE conversation=?", (identifier,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def effort(self, identifier, model):
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT effort FROM model_efforts WHERE conversation=? AND model=?",
+                (identifier, model),
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_model(self, identifier, selected):
+        self.get(identifier)
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO chat_settings VALUES (?, ?)", (identifier, selected))
+
+    def set_effort(self, identifier, model, effort):
+        self.get(identifier)
+        with self.connect() as db:
+            if effort is None:
+                db.execute(
+                    "DELETE FROM model_efforts WHERE conversation=? AND model=?",
+                    (identifier, model),
+                )
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO model_efforts VALUES (?, ?, ?)",
+                    (identifier, model, effort),
+                )
+
+    def save_plan(self, identifier, steps):
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO plans VALUES (?, ?)", (identifier, json.dumps(steps))
+            )
 
     def save_image(self, conversation, item, identifier, path, alt, mime, data):
         self.get(conversation)
@@ -81,23 +136,27 @@ class Conversations:
             raise ValueError("Unknown conversation")
         return dict(row)
 
-    def listing(self, offset=0, query=""):
+    def listing(self, offset=0, query="", limit=50):
         if type(offset) is not int or not 0 <= offset <= 100000:
             raise ValueError("Invalid conversation page")
         if not isinstance(query, str) or len(query) > 200:
             raise ValueError("Invalid conversation search")
+        if type(limit) is not int or not 1 <= limit <= 100050:
+            raise ValueError("Invalid conversation limit")
         with self.connect() as db:
             rows = db.execute(
                 "SELECT id, title, updated FROM conversations "
+                "LEFT JOIN tasks ON tasks.conversation=conversations.id "
                 "WHERE NOT EXISTS (SELECT 1 FROM hidden_chats "
                 "WHERE hidden_chats.id=conversations.id) "
                 "AND instr(lower(title), lower(?)) > 0 "
-                "ORDER BY updated DESC, id LIMIT 51 OFFSET ?",
-                (query, offset),
+                "ORDER BY CASE WHEN tasks.state IN ('working','approval','input') THEN 0 "
+                "WHEN tasks.state='failed' THEN 1 ELSE 2 END, updated DESC, id LIMIT ? OFFSET ?",
+                (query, limit + 1, offset),
             ).fetchall()
         return {
-            "chats": [{**dict(row), "task": self.task_status(row["id"])} for row in rows[:50]],
-            "next": offset + 50 if len(rows) > 50 else None,
+            "chats": [{**dict(row), "task": self.task_status(row["id"])} for row in rows[:limit]],
+            "next": offset + limit if len(rows) > limit else None,
         }
 
     def hide(self, identifier):
@@ -117,7 +176,10 @@ class Conversations:
             row = db.execute(
                 "SELECT state, detail, started FROM tasks WHERE conversation=?", (identifier,)
             ).fetchone()
-        return dict(row) if row else None
+            plan = db.execute(
+                "SELECT steps FROM plans WHERE conversation=?", (identifier,)
+            ).fetchone()
+        return {**dict(row), "steps": json.loads(plan[0]) if plan else []} if row else None
 
     def interrupt_tasks(self):
         with self.connect() as db:
@@ -170,7 +232,7 @@ class Conversations:
         messages = []
         with path.open(encoding="utf-8") as stream:
             for line in stream:
-                if len(line) > 2_000_000:
+                if len(line) > 30_000_000:
                     raise ValueError("Session entry exceeds size limit")
                 item = json.loads(line)
                 message = item.get("message", {})
@@ -186,7 +248,51 @@ class Conversations:
                         for part in content
                         if isinstance(part, dict) and part.get("type") == "text"
                     )
-                if text:
+                images = []
+                if role == "user" and isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "image":
+                            try:
+                                digest = hashlib.sha256(
+                                    base64.b64decode(part.get("data", ""), validate=True)
+                                ).hexdigest()
+                            except ValueError:
+                                continue
+                            with self.connect() as db:
+                                row = db.execute(
+                                    "SELECT id, path, alt FROM images WHERE conversation=? "
+                                    "AND id=? LIMIT 1",
+                                    (identifier, digest),
+                                ).fetchone()
+                            if row:
+                                images.append(
+                                    {
+                                        "id": row["id"],
+                                        "alt": row["alt"],
+                                        "path": f"/upload/{row['id']}",
+                                    }
+                                )
+                            else:
+                                # Pi may resize images before persisting its native history.
+                                # Retain that version too, scoped to this registered chat.
+                                try:
+                                    data, mime = validate_upload(part.get("data"))
+                                except ValueError:
+                                    continue
+                                path_ref = f"/native-image/{digest}"
+                                self.save_image(
+                                    identifier,
+                                    item.get("id", "native"),
+                                    digest,
+                                    path_ref,
+                                    "Attached image",
+                                    mime,
+                                    data,
+                                )
+                                images.append(
+                                    {"id": digest, "path": path_ref, "alt": "Attached image"}
+                                )
+                if text or images:
                     entry = {
                         "id": item.get("id", str(uuid.uuid4())),
                         "who": "You" if role == "user" else "OpenAssistant",
@@ -199,8 +305,8 @@ class Conversations:
                                 (identifier,),
                             ).fetchall()
                         images = [dict(row) for row in rows if f"({row['path']})" in text]
-                        if images:
-                            entry["images"] = images
+                    if images:
+                        entry["images"] = images
                     messages.append(entry)
         result, size = [], 0
         for message in reversed(messages):

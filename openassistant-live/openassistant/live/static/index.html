@@ -1,5 +1,7 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenAssistant</title><link rel="icon" type="image/svg+xml" href="static/openassistant-mark.svg"><link rel="stylesheet" href="static/style.css"><script defer src="static/voice.js"></script><script defer src="static/app.js"></script></head>
+<!-- OpenAssistant Live shell: accessible chat, task, request, composer and call controls.
+     Browser behavior is supplied by app.js, history.js, requests.js and voice.js. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenAssistant · Call</title><link rel="icon" type="image/svg+xml" href="static/openassistant-mark.svg"><link rel="stylesheet" href="static/style.css"><script defer src="static/voice.js"></script><script defer src="static/requests.js"></script><script defer src="static/app.js"></script></head>
 <body>
 <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
 <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></symbol>
@@ -10,16 +12,16 @@
 <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
 <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
 <symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7M15 5l4 4M10 14l-1 4 4-1L22 8l-4-4Z"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 10.5v5M12 7.7h.01"/></symbol>
 <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
 <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></symbol>
-<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 10.5v5M12 7.7h.01"/></symbol>
 </svg>
 <main>
-<header><div class="header-start"><button id="toggle-history" aria-label="Toggle chats" title="Chats (C or Alt+H)" aria-expanded="false" aria-controls="chat-history"><svg><use href="#i-sidebar"/></svg></button><img class="brand-mark" src="static/openassistant-mark.svg" alt=""><h1>OpenAssistant</h1><button id="shortcuts-help" class="icon-only" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><svg aria-hidden="true"><use href="#i-info"/></svg></button></div><span id="connection" role="status">Connecting…</span></header>
+<header><div class="header-start"><button id="toggle-history" aria-label="Toggle chats" title="Chats (C or Alt+H)" aria-expanded="false" aria-controls="chat-history"><svg><use href="#i-sidebar"/></svg></button><img class="brand-mark" src="static/openassistant-mark.svg" alt=""><h1>OpenAssistant</h1><button id="shortcuts-help" class="icon-only" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><svg aria-hidden="true"><use href="#i-info"/></svg></button><div class="model-control"><button id="chat-model" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="model-menu" disabled><span class="model-prefix">Model</span><span id="model-current">Loading…</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg></button><div id="model-menu" hidden><div class="model-menu-heading">Model for this chat</div><p>Changes apply to your next message.</p><div id="model-options" role="group" aria-label="Choose a model"></div></div></div><div class="effort-control"><button id="effort-trigger" type="button" aria-expanded="false" aria-controls="effort-menu" disabled><span>Thinking</span> <strong id="effort-current">—</strong> <span aria-hidden="true">⌄</span></button><div id="effort-menu" hidden><div class="effort-heading"><strong>Thinking effort</strong><span id="effort-value">medium</span></div><p>Applies to your next message.</p><input id="effort-slider" type="range" min="0" max="0" value="0" aria-label="Thinking effort"><div class="effort-ends"><span>Faster</span><span>Deeper</span></div></div></div></div><button id="toggle-inbox" aria-controls="pending-inbox" aria-expanded="false">Requests <span id="inbox-count">0</span></button><span id="connection" class="sr-only" role="status">Connecting…</span></header>
 <div class="workspace">
 <nav id="chat-history" aria-label="Saved conversations" hidden>
 <div class="history-heading"><h2>Chats</h2><button id="close-history" class="icon-only" aria-label="Close chat history"><svg><use href="#i-close"/></svg></button></div>
-<div class="history-actions"><div class="history-search"><svg aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="search-chats">Search chat titles</label><input id="search-chats" type="search" placeholder="Search chats" maxlength="200" disabled></div><button id="new-chat" aria-label="New chat" title="New chat" disabled><svg aria-hidden="true"><use href="#i-compose"/></svg></button></div>
+<div class="history-actions"><div class="history-search"><svg aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="search-chats">Search chat titles</label><input id="search-chats" type="search" placeholder="Search" maxlength="200" disabled></div><button id="new-chat" aria-label="New chat" title="New chat" disabled><svg aria-hidden="true"><use href="#i-compose"/></svg></button></div>
 <div class="history-heading history-recents"><h3>Recent conversations</h3><button id="refresh-chats" disabled aria-label="Refresh chats" title="Refresh chats"><svg><use href="#i-refresh"/></svg></button></div>
 <ol id="saved-chats" aria-label="Recent chats"></ol>
 <button id="older-chats" hidden>Load more</button>
@@ -28,37 +30,39 @@
 </nav>
 <div class="workspace-content"><div class="layout">
 <section class="stage" aria-label="OpenAssistant participant">
-<div class="stage-content"><img class="openassistant-avatar" src="static/openassistant-mark.svg" alt="" width="40" height="40"><div class="stage-conversation">
+<div class="stage-content"><img class="openassistant-avatar" src="static/openassistant-mark.svg" alt="" width="52" height="52"><div class="stage-conversation">
 <div class="stage-top"><span class="state-dot"></span><span id="status" role="status">Connecting…</span></div>
-<div class="portrait"><h2>Start a conversation</h2><p id="hint">Connect to use voice or text.</p>
-<form id="login" hidden><div id="key-fields" hidden><label for="token">Access key</label><input id="token" type="password" autocomplete="off" maxlength="256"></div><button id="join" disabled>Connect</button></form></div>
+<div class="portrait"><h2>Ready when you are</h2><p id="hint">A conversation with OpenAssistant.</p>
+<form id="login" hidden><div id="key-fields" hidden><label for="token">Access key</label><input id="token" type="password" autocomplete="off" maxlength="256"></div><button id="join" disabled>Connect to OpenAssistant</button><small>Your microphone starts off.</small></form></div>
 <div id="live-response" hidden>
 <div id="live-caption" hidden aria-live="off"></div>
 <section id="task-panel" hidden aria-label="OpenAssistant's tasks">
 <div class="task-heading"><span id="task-state" role="status">Thinking</span></div>
 <p id="task-request" class="sr-only"></p><p id="task-detail" class="sr-only"></p>
+<ul id="task-list" aria-label="OpenAssistant's plan" hidden></ul>
 <div class="task-meta"><span id="task-time"></span><details id="task-activity" hidden><summary>Details <span id="activity-count"></span></summary><ol id="activity-list" aria-label="Tool activity"></ol></details></div>
 </section></div></div></div>
-<div class="participant-name">OpenAssistant</div>
+<div class="participant-name">OpenAssistant <span>AI assistant</span></div>
 <div id="in-call" hidden><div class="you"><span class="avatar">Y</span><span id="name">You</span><span id="mic-state">Microphone off</span></div></div>
 </section>
 <aside id="conversation" hidden aria-label="Conversation">
 <div class="panel-heading"><h2>Conversation</h2><button id="close-panel" class="icon-only" aria-label="Close conversation"><svg><use href="#i-close"/></svg></button></div>
-<div id="transcript" role="log" aria-label="Conversation transcript"></div>
-</aside></div>
-<section id="input-requests" aria-label="Requests needing your input" aria-live="polite" hidden></section>
+<div id="transcript" role="log" aria-label="Call transcript"><p id="empty">Your conversation will appear here.<br><span>Speak or send OpenAssistant a message.</span></p></div>
+</aside><aside id="pending-inbox" aria-label="Requests across chats" hidden><div class="panel-heading"><h2>Requests</h2><button id="close-inbox" class="icon-only" aria-label="Close requests">×</button></div><p id="inbox-shortcut">⌘/Ctrl + Enter to confirm the focused request</p><p id="inbox-empty">No requests waiting for you.</p><div id="inbox-list"></div></aside></div>
 <div class="compose-area">
 <ol id="text-queue" aria-label="Queued messages" aria-live="polite" hidden></ol>
-<form id="composer"><label class="sr-only" for="prompt">Message OpenAssistant</label><textarea id="prompt" placeholder="Message OpenAssistant…" maxlength="8000" rows="1" disabled required></textarea><button id="send" disabled aria-label="Send message">↑</button></form>
+<div id="image-draft" aria-label="Attached images" hidden></div>
+<input type="file" id="image-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+<form id="composer"><button type="button" id="attach-image" aria-label="Attach image" title="Attach image" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.8 14.9 6.4a3.3 3.3 0 0 1 4.7 4.7l-8.1 8.1a5 5 0 0 1-7.1-7.1l8-8"/></svg></button><label class="sr-only" for="prompt">Message OpenAssistant</label><textarea id="prompt" placeholder="Message OpenAssistant…" maxlength="8000" rows="1" disabled></textarea><button id="send" disabled aria-label="Send message">↑</button></form>
 </div>
 <footer>
-<div class="call-details"><span id="elapsed">00:00</span><span>Conversation</span></div>
+<div class="call-details"><span id="elapsed">00:00</span><span>OpenAssistant call</span></div>
 <div class="controls">
 <button id="mic" disabled aria-pressed="false"><svg><use href="#i-mic"/></svg><span id="mic-label">Mic off</span></button>
-<div class="sound-control"><button id="sound" disabled aria-haspopup="true" aria-expanded="false" aria-controls="sound-menu" title="Sound options"><svg><use href="#i-sound"/></svg><span id="sound-label">Voice &amp; alerts</span></button><div id="sound-menu" role="group" aria-label="Sound options" hidden><button type="button" data-sound="off">Off</button><button type="button" data-sound="alerts">Alerts only</button><button type="button" data-sound="voice">Voice &amp; alerts</button></div></div>
+<div class="sound-control"><button id="sound" disabled aria-haspopup="true" aria-expanded="false" aria-controls="sound-menu" title="Sound options"><svg aria-hidden="true"><use href="#i-sound"/></svg><span id="sound-label">Voice &amp; alerts</span></button><div id="sound-menu" role="group" aria-label="Sound options" hidden><button type="button" data-sound="off" aria-pressed="false"><strong>Off</strong><small>Silence voice and alerts</small></button><button type="button" data-sound="alerts" aria-pressed="false"><strong>Alerts only</strong><small>Play approval and request alerts</small></button><button type="button" data-sound="voice" aria-pressed="true"><strong>Voice &amp; alerts</strong><small>Speak replies and play alerts</small></button></div></div>
 <button id="interrupt" disabled title="Stop the agent turn and its voice; completed actions are not undone"><svg><use href="#i-stop"/></svg><span>Stop task</span></button>
 <button id="leave" disabled><svg><use href="#i-phone"/></svg><span>Disconnect</span></button>
 </div>
 <button id="toggle-panel" aria-label="Toggle conversation" title="Conversation (Alt+C)" aria-expanded="false" aria-controls="conversation"><svg><use href="#i-chat"/></svg><span>Conversation</span></button>
 </footer><p id="notice" role="status"></p></div></div>
-</main><dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-only" aria-label="Close keyboard shortcuts"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><p class="shortcuts-note">Option on Mac · Alt on Windows</p><dl class="shortcuts-list"><div><dt>Open a numbered chat</dt><dd>Option / Alt + 1–9</dd></div><div><dt>Browse chats</dt><dd>C or Option / Alt + H, then ↑ / ↓ and Enter</dd></div><div><dt>Open conversation</dt><dd>Option / Alt + C</dd></div><div><dt>Close open panel or dialog</dt><dd>Option / Alt + W</dd></div><div><dt>Focus message box</dt><dd>Enter, when no control is focused</dd></div><div><dt>Send message</dt><dd>Enter</dd></div><div><dt>New line</dt><dd>Shift + Enter</dd></div><div><dt>Recall messages</dt><dd>↑ / ↓ in the message box</dd></div><div><dt>Send guidance now</dt><dd>⌘ / Ctrl + Enter in the message box</dd></div></dl></dialog><dialog id="image-viewer" aria-label="Image preview"><button id="close-image" aria-label="Close image preview">Close</button><img id="image-full" alt=""></dialog><script src="static/history.js"></script></body></html>
+</main><dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-only" aria-label="Close keyboard shortcuts"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><p class="shortcuts-note">Option on Mac · Alt on Windows</p><dl class="shortcuts-list"><div><dt>Toggle microphone</dt><dd>Tap Control twice</dd></div><div><dt>Stop current task</dt><dd>Tap Option / Alt twice</dd></div><div><dt>Open a numbered chat</dt><dd>Option / Alt + 1–9</dd></div><div><dt>Browse chats</dt><dd>Option / Alt + H, then ↑ / ↓ and Enter</dd></div><div><dt>Close open panel or dialog</dt><dd>Option / Alt + W</dd></div><div><dt>Focus message box</dt><dd>Enter, when no control is focused</dd></div><div><dt>Send message</dt><dd>Enter</dd></div><div><dt>New line</dt><dd>Shift + Enter</dd></div><div><dt>Recall messages</dt><dd>↑ / ↓ in the message box</dd></div><div><dt>Confirm a request</dt><dd>⌘ / Ctrl + Enter on a request</dd></div></dl></dialog><dialog id="image-viewer" aria-label="Image preview"><button id="close-image" aria-label="Close image preview">Close</button><img id="image-full" alt=""></dialog><script src="static/history.js"></script></body></html>

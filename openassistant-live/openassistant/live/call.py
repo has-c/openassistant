@@ -3,20 +3,26 @@
 import asyncio
 import base64
 import contextlib
+import copy
 import logging
 import re
 import tempfile
 import time
 import uuid
 from pathlib import Path
+from threading import Lock
 
 from aiohttp.client_exceptions import ClientError
 
-from ..pi_session import Session
+from ..pi_session import Session, TurnRejected
 from ..speech import Speech
-from .images import capture_images
+from .images import capture_images, retain_uploads
 
 log = logging.getLogger(__name__)
+
+
+class InactivityTimeout(TimeoutError):
+    """The turn watchdog observed no Pi progress within its configured limit."""
 
 
 class Call:
@@ -34,6 +40,13 @@ class Call:
         self.principal = None
         self.snapshot = {}
         self.pending_ui = {}
+        self.pending_changed = None
+        self.turn_selection = None
+        self.attachments = []
+        self.uploads = []
+        self.catalogue = None
+        self.last_activity = 0
+        self.accepted = False
 
     def remember(self, kind, data):
         if kind == "start":
@@ -44,8 +57,10 @@ class Call:
                 "request": "",
                 "responses": [],
                 "activities": [],
+                "steps": [],
             }
             if self.history and self.conversation:
+                self.history.save_plan(self.conversation, [])
                 self.history.update_task(
                     self.conversation, "working", "Working", self.snapshot["started"]
                 )
@@ -60,6 +75,10 @@ class Call:
                 )
         elif kind == "user":
             self.snapshot["request"] = data.get("text", "")
+        elif kind == "plan":
+            self.snapshot["steps"] = data["steps"]
+            if self.history and self.conversation:
+                self.history.save_plan(self.conversation, data["steps"])
         elif kind == "activity":
             rows = self.snapshot.setdefault("activities", [])
             rows[:] = [r for r in rows if not data.get("id") or r.get("id") != data["id"]]
@@ -130,6 +149,7 @@ class Call:
                 "message",
                 "result",
                 "activity",
+                "plan",
                 "done",
                 "stopped",
                 "turn_ready",
@@ -173,6 +193,7 @@ class Call:
         self.snapshot["pending_ui"] = [entry[1] for entry in self.pending_ui.values()]
         try:
             await self.send("input_request", request=item)
+            await self.refresh_pending()
             timeout = request.get("timeout")
             seconds = (
                 min(120, max(0.1, timeout / 1000)) if isinstance(timeout, (int, float)) else 120
@@ -182,9 +203,32 @@ class Call:
         except TimeoutError:
             return None
         finally:
+            self.last_activity = asyncio.get_running_loop().time()
             self.pending_ui.pop(token, None)
             self.snapshot["pending_ui"] = [entry[1] for entry in self.pending_ui.values()]
             await self.send("input_closed", id=token)
+            await self.refresh_pending()
+
+    async def refresh_pending(self):
+        if self.pending_changed:
+            await self.pending_changed()
+        if self.snapshot.get("state") not in {"finished", "failed", "stopped", "interrupted"}:
+            state = (
+                "approval"
+                if any(item["method"] == "confirm" for _, item in self.pending_ui.values())
+                else "input"
+                if self.pending_ui
+                else "working"
+            )
+            await self.send(
+                "task",
+                state=state,
+                text={
+                    "approval": "Needs approval",
+                    "input": "Needs your answer",
+                    "working": "Working",
+                }[state],
+            )
 
     def answer_ui(self, token, value):
         entry = self.pending_ui.get(token) if isinstance(token, str) else None
@@ -228,22 +272,61 @@ class Call:
         loop = asyncio.get_running_loop()
         events = asyncio.Queue(maxsize=128)
         voice = asyncio.Queue(maxsize=16)
-        worker = speaker = None
+        worker = speaker = watchdog = None
         active = True
         started = loop.time()
+        self.last_activity = started
+        self.accepted = False
         first_audio = True
         stage = "starting"
+        bridge_lock = Lock()
+        bridge_waiters = set()
 
         def bridge(coro):
-            if not active:
-                coro.close()
-                raise RuntimeError("Call ended.")
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            with bridge_lock:
+                if not active:
+                    coro.close()
+                    raise RuntimeError("Call ended.")
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+                bridge_waiters.add(future)
             try:
                 return future.result(timeout=130)
             except BaseException:
                 future.cancel()
                 raise
+            finally:
+                with bridge_lock:
+                    bridge_waiters.discard(future)
+
+        async def accept():
+            if self.uploads:
+                self.attachments = await asyncio.to_thread(
+                    retain_uploads, self.history, self.conversation, self.uploads
+                )
+            else:
+                self.attachments = []
+            self.accepted = True
+            await self.send("start")
+            await self.send("user", text=prompt, images=self.attachments)
+            await self.send("task", state="working", text="Working on your request")
+
+        def activity():
+            loop.call_soon_threadsafe(touch)
+
+        def touch():
+            self.last_activity = loop.time()
+
+        async def watch():
+            seconds = getattr(self.config, "inactivity_timeout", 1800)
+            if not seconds:
+                return
+            while True:
+                await asyncio.sleep(min(seconds, 1))
+                if self.pending_ui:
+                    self.last_activity = loop.time()
+                elif loop.time() - self.last_activity >= seconds:
+                    await events.put(("failed", InactivityTimeout("Pi inactivity timeout")))
+                    return
 
         async def speak():
             nonlocal first_audio
@@ -271,7 +354,7 @@ class Call:
                     log.warning("Speech synthesis unavailable")
 
         try:
-            async with asyncio.timeout(900):
+            async with asyncio.timeout(None):
                 if recording is not None:
                     stage = "transcription"
                     await self.send("status", text="Transcribing")
@@ -286,15 +369,22 @@ class Call:
                         stage="transcription",
                         milliseconds=round((loop.time() - started) * 1000),
                     )
-                await self.send("user", text=prompt)
-                await self.send("task", state="working", text="Working on your request")
                 stage = "agent"
+                turn_config = copy.copy(self.config)
+                turn_config.turn_selection = self.turn_selection
                 self.session = Session(
-                    self.config,
+                    turn_config,
                     lambda thread: self.saved_thread(thread, prompt),
                     lambda value: bridge(events.put(("progress", value))),
                     message_event=lambda kind, value: bridge(events.put((kind, value))),
                     ui_handler=lambda request: bridge(self.request_ui(request)),
+                    ready=lambda: bridge(accept()),
+                    activity=activity,
+                    catalogue=(
+                        lambda options: loop.call_soon_threadsafe(self.catalogue.offer, options)
+                    )
+                    if self.catalogue
+                    else None,
                     extra_instructions=(
                         "\nThis turn is in the OpenAssistant voice app. "
                         "Replies appear here and are spoken automatically. Use short natural "
@@ -303,18 +393,37 @@ class Call:
                         " To show a local image in this app, include it in your final reply "
                         "as Markdown image syntax with an absolute path, such as "
                         "![Description](/tmp/example.png). Use PNG, JPEG, GIF or WebP."
+                        " For work with multiple steps, use update_plan with a steps array "
+                        "to publish and maintain a concise plan. Skip plans for simple replies."
                     ),
                 )
 
                 async def generate():
                     try:
-                        result = await asyncio.to_thread(self.session.run, self.thread, prompt)
-                        await events.put(("result", result))
+                        images = []
+                        for data, mime in self.uploads:
+                            images.append(
+                                {
+                                    "type": "image",
+                                    "mimeType": mime,
+                                    "data": base64.b64encode(data).decode("ascii"),
+                                }
+                            )
+                        result = await asyncio.to_thread(
+                            self.session.run,
+                            self.thread,
+                            prompt,
+                            **({"images": images} if images else {}),
+                        )
+                        if active:
+                            await events.put(("result", result))
                     except Exception as error:
-                        await events.put(("failed", error))
+                        if active:
+                            await events.put(("failed", error))
 
                 worker = asyncio.create_task(generate())
                 speaker = asyncio.create_task(speak())
+                watchdog = asyncio.create_task(watch())
                 buffers, size = {}, 0
                 while True:
                     kind, value = await events.get()
@@ -330,7 +439,7 @@ class Call:
                         elif isinstance(value, str):
                             await self.send("activity", label=value[:240], state="update")
                         continue
-                    if kind == "activity":
+                    if kind in ("activity", "plan"):
                         await self.send(kind, **value)
                         continue
                     item = value.get("itemId") or value.get("id")
@@ -363,10 +472,28 @@ class Call:
                 type(error).__name__,
                 stage,
             )
+            if not self.accepted:
+                if stage == "transcription":
+                    message = (
+                        "Could not transcribe this recording. Try recording again or send text."
+                    )
+                elif isinstance(error, TurnRejected):
+                    message = str(error)
+                else:
+                    message = "Could not prepare this message. Check the model and retry."
+                await self.send("upload_error", text=f"{message} Reference {reference}.")
+                return
             # A disconnected browser cannot receive an error notification.
             with contextlib.suppress(ClientError, ConnectionError):
                 await self.send(
-                    "task", state="failed", text=f"Task stopped. Reference {reference}."
+                    "task",
+                    state="failed",
+                    text=(
+                        "Task stopped after no Pi progress. "
+                        "Adjust --inactivity-timeout for silent tools."
+                        if isinstance(error, InactivityTimeout)
+                        else f"Task stopped. Reference {reference}."
+                    ),
                 )
                 await self.send(
                     "notice",
@@ -375,12 +502,26 @@ class Call:
                 )
                 await self.send("done")
         finally:
-            active = False
+            with bridge_lock:
+                active = False
+                for future in tuple(bridge_waiters):
+                    future.cancel()
+            # Unblock a producer already waiting to enqueue its terminal result.
+            while not events.empty():
+                events.get_nowait()
+            for future, _ in list(self.pending_ui.values()):
+                if not future.done():
+                    future.set_result(None)
             if self.session:
                 await asyncio.to_thread(self.session.stop)
-            for task in (worker, speaker):
+            # Session.close has reaped the child. Join the actual run worker
+            # before releasing capacity; cancelling to_thread would leave it alive.
+            if worker:
+                await worker
+            for task in (speaker, watchdog):
                 if task:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
             self.session = None
+            self.uploads = []

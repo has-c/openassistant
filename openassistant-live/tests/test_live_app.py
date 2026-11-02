@@ -17,7 +17,7 @@ async def test_closed_agent_transport_does_not_end_call(client, monkeypatch, ina
     from pi_agent.errors import PiProcessError
 
     class ClosedClient:
-        def abort(self):
+        def abort(self, **kwargs):
             raise PiProcessError("Pi process is not running")
 
         def close(self):
@@ -27,6 +27,7 @@ async def test_closed_agent_transport_does_not_end_call(client, monkeypatch, ina
         stop = live_call.Session.stop
 
         def __init__(self, *args, **kwargs):
+            self.ready = kwargs["ready"]
             self.stopped = Event()
             self.lock = Lock()
             self.client = ClosedClient()
@@ -34,6 +35,7 @@ async def test_closed_agent_transport_does_not_end_call(client, monkeypatch, ina
             self.thread_id = "thread1"
 
         def run(self, *args):
+            self.ready()
             raise PiProcessError("Pi process is not running")
 
     monkeypatch.setattr(live_call, "Session", FailedSession)
@@ -78,11 +80,11 @@ async def test_intentional_stop_is_not_reported_as_task_error(client, monkeypatc
     running, stopped = Event(), Event()
 
     class InterruptedSession:
-
         def __init__(self, *args, **kwargs):
-            pass
+            self.ready = kwargs["ready"]
 
         def run(self, *args):
+            self.ready()
             running.set()
             assert stopped.wait(3)
             raise failure("Agent interrupted during shutdown")
@@ -141,9 +143,11 @@ async def test_stream_audio_and_separate_session_history(client, monkeypatch):
 
     class FakeSession:
         def __init__(self, config, saved, progress, message_event, **kwargs):
+            self.ready = kwargs["ready"]
             self.saved, self.events = saved, message_event
 
         def run(self, thread, prompt):
+            self.ready()
             threads.append(thread)
             self.saved("private-thread")
             self.events("activity", {"id": "tool1", "label": "Calendar search", "state": "running"})
@@ -190,10 +194,6 @@ async def test_stream_audio_and_separate_session_history(client, monkeypatch):
     await ws.close()
 
 
-
-
-
-
 async def test_security_headers_and_static_assets(client):
     response = await client.get("/")
     assert response.status == 200
@@ -227,11 +227,11 @@ async def test_guidance_does_not_interrupt_and_ready_follows_cleanup(client, mon
     guidance = []
 
     class WorkingSession:
-
         def __init__(self, *args, **kwargs):
-            pass
+            self.ready = kwargs["ready"]
 
         def run(self, *args):
+            self.ready()
             entered.set()
             release.wait(3)
             return "Finished"

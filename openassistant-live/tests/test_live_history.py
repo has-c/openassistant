@@ -153,6 +153,7 @@ async def test_shared_chat_has_one_writer_and_resumes_latest_binding(tmp_path, m
     prompts, running = [], asyncio.Event()
 
     async def run(self, prompt, recording):
+        await self.send("start")
         prompts.append((self.thread, prompt))
         thread = "independent-thread" if prompt == "Independent" else "native-thread"
         self.saved_thread(thread, prompt)

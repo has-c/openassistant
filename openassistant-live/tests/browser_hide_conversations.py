@@ -70,7 +70,7 @@ async def main():
             await page.goto("http://localhost:8768/")
             await expect(page.locator("#prompt")).to_be_enabled()
             await page.locator("#toggle-history").click()
-            row = page.locator("#saved-chats li").first
+            row = page.locator("#saved-chats li[data-id]").first
             close = page.get_by_role("button", name="Remove Review PR 182 from recent chats")
             await expect(close).to_have_count(1)
             if not mobile:
@@ -79,7 +79,7 @@ async def main():
             await expect(close).to_have_css("opacity", "1")
             await page.screenshot(path=f"/tmp/openassistant-hide-{width}.png")
             await close.click()
-            await expect(page.locator("#saved-chats")).to_contain_text("No chats yet")
+            await expect(page.locator("#saved-chats")).to_contain_text("No saved chats yet")
             assert await page.evaluate("conversationId") == "chat-1"
             await page.close()
         await browser.close()

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import contextlib
+import copy
 import hmac
 import itertools
 import json
@@ -15,12 +16,18 @@ from aiohttp import WSMsgType, web
 from aiohttp.client_exceptions import ClientError
 from pi_agent import AsyncPiClient
 
+from ..models import ModelCatalogue, model_options
 from .asr import LiveTranscriber, RemoteTranscriber
 from .call import Call
 from .history import Conversations
+from .images import prepare_uploads
 
 STATIC = Path(__file__).with_name("static")
 log = logging.getLogger(__name__)
+
+
+class SelectionRejected(ValueError):
+    """A picker validation message that is safe to show to the user."""
 
 
 async def generate_title(config, messages):
@@ -52,13 +59,89 @@ def create_app(config):
     occupied = set()
     connections = set()
     calls, active = set(), {}
+    preparing = set()
     serials = itertools.count(1)
     title_tasks = {}
+    picker_tasks = set()
+    catalogue = ModelCatalogue(config, discover=model_options)
+    selection_locks = {}
+
+    async def selection(identifier, data):
+        # Only this chat's picker operations serialize; turns never acquire this lock.
+        lock = selection_locks.setdefault(identifier, asyncio.Lock())
+        async with lock:
+            selected = history.model(identifier)
+            kind = data["type"]
+            if kind == "model_select":
+                selected = data.get("model")
+                if selected is not None and (not isinstance(selected, str) or len(selected) > 500):
+                    raise SelectionRejected("Invalid model selection")
+                # Default reset remains available when discovery is down.
+                if selected is None:
+                    history.set_model(identifier, None)
+            try:
+                options = await catalogue.options(selected, refresh=bool(data.get("refresh")))
+            except Exception:
+                if kind != "model_select" or selected is not None:
+                    raise
+                # The preference reset succeeded even if capability discovery did not.
+                options = {
+                    "selected": None,
+                    "effective": None,
+                    "default": None,
+                    "models": [],
+                    "levels": [],
+                    "effort": None,
+                }
+
+            if kind == "model_select":
+                if options.get("unavailable"):
+                    raise SelectionRejected("Selected model unavailable")
+                history.set_model(identifier, selected)
+            effort_key = selected or ""
+            if kind == "effort_select":
+                if data.get("model") != options["effective"]:
+                    raise SelectionRejected("The model changed. Choose thinking effort again.")
+                effort = data.get("effort")
+                if effort is not None and effort not in options["levels"]:
+                    raise SelectionRejected("Unsupported thinking effort")
+                history.set_effort(identifier, effort_key, effort)
+            effort = history.effort(identifier, effort_key)
+            options["inherited"] = effort is None
+            if effort is not None:
+                options["effort"] = effort
+            return options
+
+    async def picker(call, identifier, data):
+        try:
+            options = await selection(identifier, data)
+        except Exception as error:
+            reference = uuid.uuid4().hex[:10]
+            log.warning(
+                "Live preparation failed ref=%s type=%s stage=picker",
+                reference,
+                type(error).__name__,
+            )
+            if call.conversation == identifier:
+                message = (
+                    str(error)
+                    if isinstance(error, SelectionRejected)
+                    else "Could not load or change models. Retry or choose Default."
+                )
+                await call.send("model_error", text=f"{message} Reference {reference}.")
+        else:
+            for peer in tuple(calls):
+                if peer.conversation == identifier:
+                    await peer.send("model_options", **options)
 
     async def update_title(identifier, version):
         try:
             transcript = await asyncio.to_thread(history.transcript, identifier)
-            title = await generate_title(config, transcript["messages"])
+            title_config = copy.copy(config)
+            selected = history.model(identifier)
+            if selected:
+                title_config.pi_provider, title_config.model = json.loads(selected)
+            title = await generate_title(title_config, transcript["messages"])
             if not title or not history.set_title_if_current(identifier, version, title):
                 return
 
@@ -95,6 +178,33 @@ def create_app(config):
     whisper_endpoint = getattr(config, "whisper_endpoint", None)
     transcriber = RemoteTranscriber(whisper_endpoint) if whisper_endpoint else LiveTranscriber()
 
+    async def pending_for(peer):
+        if not peer.ws or peer.ws.closed or not peer.owner:
+            return
+        items = []
+        for identifier, task in tuple(active.items()):
+            if task.owner != peer.owner or task.principal != peer.principal:
+                continue
+            for future, pending in tuple(task.pending_ui.values()):
+                if not future.done():
+                    items.append(
+                        {
+                            "conversation": identifier,
+                            "turn": task.serial,
+                            "title": history.get(identifier)["title"],
+                            "request": task.snapshot.get("request", ""),
+                            "pending": pending,
+                        }
+                    )
+        try:
+            async with asyncio.timeout(2):
+                await peer.ws.send_json({"type": "pending_inbox", "items": items})
+        except (ClientError, ConnectionError, TimeoutError):
+            log.debug("Pending inbox delivery unavailable")
+
+    async def pending_changed():
+        await asyncio.gather(*(pending_for(peer) for peer in tuple(calls)), return_exceptions=True)
+
     @web.middleware
     async def headers(request, handler):
         response = await handler(request)
@@ -113,7 +223,7 @@ def create_app(config):
     async def socket(request):
         if request.headers.get("Origin") != config.origin or len(connections) >= 8:
             raise web.HTTPForbidden()
-        ws = web.WebSocketResponse(max_msg_size=10_000_000, heartbeat=30)
+        ws = web.WebSocketResponse(max_msg_size=30_000_000, heartbeat=30)
         connections.add(ws)
         name = None
         call = None
@@ -151,6 +261,7 @@ def create_app(config):
                 call.owner = None
             call.principal = "tailnet" if getattr(config, "tailnet_only", False) else name
             call.history, call.peers = history, calls
+            call.pending_changed = pending_changed
             calls.add(call)
 
             async def run_turn(task_call, prompt, recording):
@@ -158,7 +269,10 @@ def create_app(config):
                 try:
                     await task_call.run(prompt, recording)
                 except asyncio.CancelledError:
-                    if task_call.snapshot.get("state") not in ("finished", "failed"):
+                    if task_call.accepted and task_call.snapshot.get("state") not in (
+                        "finished",
+                        "failed",
+                    ):
                         await task_call.send("task", state="stopped", text="Task stopped")
                     raise
                 finally:
@@ -174,8 +288,12 @@ def create_app(config):
                     await task_call.send("turn_ready")
 
             await call.send("ready", name="You" if getattr(config, "tailnet_only", False) else name)
+            await pending_for(call)
             async for message in ws:
                 if message.type == WSMsgType.BINARY:
+                    if len(message.data) > 10_000_000:
+                        await call.send("notice", text="Recording is too large.")
+                        continue
                     data = {"type": "recording"}
                 elif message.type == WSMsgType.TEXT:
                     data = json.loads(message.data)
@@ -184,6 +302,31 @@ def create_app(config):
                 else:
                     break
                 kind = data.get("type")
+                if history and kind in {"model_list", "model_select", "effort_select"}:
+                    if not call.conversation or data.get("conversation") != call.conversation:
+                        await call.send("notice", text="Open a chat first.")
+                        continue
+                    task = asyncio.create_task(picker(call, call.conversation, data))
+                    picker_tasks.add(task)
+                    task.add_done_callback(picker_tasks.discard)
+                    continue
+                if history and kind == "pending_inbox":
+                    await pending_for(call)
+                    continue
+                if history and kind == "global_answer":
+                    target = active.get(data.get("conversation"))
+                    if not (
+                        target
+                        and call.owner
+                        and target.owner == call.owner
+                        and target.principal == call.principal
+                        and data.get("turn") == target.serial
+                        and "value" in data
+                        and target.answer_ui(data.get("id"), data["value"])
+                    ):
+                        await call.send("notice", text="That request is no longer available.")
+                    await pending_changed()
+                    continue
                 if kind in ("stop", "steer") and (
                     data.get("conversation", call.conversation) != call.conversation
                     or data.get("turn", call.serial) != call.serial
@@ -226,11 +369,14 @@ def create_app(config):
                                     )
                 elif history and kind == "conversations":
                     try:
-                        page = history.listing(data.get("offset", 0), data.get("query", ""))
+                        page = history.listing(
+                            data.get("offset", 0), data.get("query", ""), data.get("limit", 50)
+                        )
                         await call.send(
                             "conversations",
                             offset=data.get("offset", 0),
                             query=data.get("query", ""),
+                            request_id=data.get("request_id"),
                             **page,
                         )
                     except ValueError:
@@ -262,6 +408,7 @@ def create_app(config):
                         call = Call(ws, config, transcriber)
                         call.owner, call.principal = detached.owner, detached.principal
                         call.history, call.peers = history, calls
+                        call.pending_changed = pending_changed
                         calls.add(call)
                     call.conversation, call.thread = chat["id"], chat["thread"]
                     running = active.get(chat["id"])
@@ -348,7 +495,7 @@ def create_app(config):
                             "notice", text="Interrupt OpenAssistant before starting another turn."
                         )
                         continue
-                    if len(active) >= 8:
+                    if len(active) + len(preparing) >= 8:
                         await call.send(
                             "notice",
                             text="OpenAssistant is at capacity. Try again when a task finishes.",
@@ -367,7 +514,7 @@ def create_app(config):
                                 busy=False,
                                 observer=False,
                             )
-                        if call.conversation in active:
+                        if call.conversation in active or call.conversation in preparing:
                             await call.send(
                                 "conversation_busy", text="Another call is working in this chat."
                             )
@@ -376,14 +523,44 @@ def create_app(config):
                         # chat since we selected it. Never fork a second first thread.
                         call.thread = history.get(call.conversation)["thread"]
                     prompt = data.get("text", "")
+                    encoded = data.get("images") if kind == "prompt" else None
                     if kind == "prompt" and (
-                        not isinstance(prompt, str) or not 0 < len(prompt.strip()) <= 8000
+                        not isinstance(prompt, str)
+                        or len(prompt) > 8000
+                        or (not prompt.strip() and not encoded)
                     ):
                         continue
+                    if history:
+                        preparing.add(call.conversation)
+                    try:
+                        selected = history.model(call.conversation) if history else None
+                        call.turn_selection = {
+                            "selected": selected,
+                            "effort": history.effort(call.conversation, selected or "")
+                            if history
+                            else None,
+                        }
+                        call.catalogue = catalogue
+                        call.uploads = (
+                            await asyncio.to_thread(prepare_uploads, encoded)
+                            if encoded is not None
+                            else []
+                        )
+                    except (ValueError, TypeError) as error:
+                        reference = uuid.uuid4().hex[:10]
+                        log.warning(
+                            "Live preparation failed ref=%s type=%s stage=upload",
+                            reference,
+                            type(error).__name__,
+                        )
+                        await call.send("upload_error", text=f"{error} Reference {reference}.")
+                        continue
+                    finally:
+                        preparing.discard(call.conversation)
+                    call.snapshot = {}
                     call.serial = next(serials)
                     if history:
                         active[call.conversation] = call
-                    await call.send("start")
                     call.task = asyncio.create_task(
                         run_turn(call, prompt, message.data if kind == "recording" else None)
                     )
@@ -408,6 +585,9 @@ def create_app(config):
         return web.json_response({"access_required": not getattr(config, "tailnet_only", False)})
 
     async def shutdown(app):
+        for task in tuple(picker_tasks):
+            task.cancel()
+        await asyncio.gather(*picker_tasks, return_exceptions=True)
         for task in list(title_tasks.values()):
             task.cancel()
         await asyncio.gather(*list(title_tasks.values()), return_exceptions=True)
@@ -427,7 +607,7 @@ def create_app(config):
         if history:
             history.interrupt_tasks()
 
-    app = web.Application(middlewares=[headers], client_max_size=10_000_000)
+    app = web.Application(middlewares=[headers], client_max_size=1_048_576)
     app.router.add_get("/", index)
     app.router.add_get("/ws", socket)
     app.router.add_get("/client-config", client_config)

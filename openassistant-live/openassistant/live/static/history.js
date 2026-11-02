@@ -1,7 +1,103 @@
+/**
+ * Manage the saved-chat sidebar and restore a selected conversation.
+ *
+ * Keeps per-chat drafts and unsent queues in this browser tab, restores active
+ * task state after reconnecting, and pauses queues that require user review.
+ * Native Pi history remains the source of completed conversation messages.
+ */
 'use strict';
 let conversationId = null, historyReady = false, observing = false, nextChatPage = null;
 let sendingEntry = null;
 let historySearchTimer;
+let historyRequest = 0, historyLimit = 50;
+let effortLevels = [];
+let effectiveModel = null;
+let modelErrorText = null;
+function closeEffort() { $('effort-menu').hidden = true; $('effort-trigger').setAttribute('aria-expanded', 'false'); }
+function renderEffort(data) {
+  effortLevels = Array.isArray(data.levels) ? data.levels : [];
+  const trigger = $('effort-trigger'), slider = $('effort-slider');
+  trigger.disabled = !effortLevels.length;
+  if (!effortLevels.length) { closeEffort(); $('effort-current').textContent = 'Unavailable'; return; }
+  const index = Math.max(0, effortLevels.indexOf(data.effort));
+  slider.max = String(effortLevels.length - 1); slider.value = String(index);
+  $('effort-current').textContent = effortLevels[index]; $('effort-value').textContent = effortLevels[index];
+  slider.setAttribute('aria-valuetext', effortLevels[index]);
+}
+function resetModelOptions() {
+  $('model-current').textContent = 'Loading…'; $('chat-model').disabled = true;
+  $('model-menu').hidden = true; $('chat-model').setAttribute('aria-expanded', 'false');
+  $('effort-trigger').disabled = true; closeEffort();
+}
+function renderModelOptions(data) {
+  const trigger = $('chat-model'), options = $('model-options');
+  if (data.type === 'model_error') {
+    $('model-current').textContent = 'Retry models'; trigger.disabled = false;
+    $('effort-trigger').disabled = true;
+    options.replaceChildren();
+    for (const [label, type] of [['Retry', 'model_list'], ['Use Default', 'model_select']]) {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+      button.onclick = () => send({type, conversation:conversationId, model:null, refresh:true}); options.append(button);
+    }
+    modelErrorText = data.text; notice(data.text); return;
+  }
+  if (modelErrorText && $('notice').textContent === modelErrorText) notice('');
+  modelErrorText = null;
+  const selected = data.selected || '';
+  effectiveModel = data.effective;
+  const current = data.unavailable ? 'Unavailable — choose model' : data.models.find(m => m.id === effectiveModel)?.label || 'Default';
+  $('model-current').textContent = current;
+  trigger.title = `Model for this chat: ${current}`;
+  options.replaceChildren();
+  const defaultLabel = data.models.find(m => m.id === data.default)?.label || 'Pi default';
+  for (const [value, label] of [['', `Default (${defaultLabel})`], ...data.models.map(m => [m.id, m.label])]) {
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = 'model-option'; button.dataset.model = value;
+    button.setAttribute('aria-pressed', String(value === selected));
+    const name = document.createElement('span'); name.textContent = label; button.append(name);
+    if (value === selected) { const check = document.createElement('span'); check.className = 'model-check'; check.textContent = '✓'; check.setAttribute('aria-hidden','true'); button.append(check); }
+    button.onclick = () => {
+      trigger.disabled = true; $('model-menu').hidden = true; trigger.setAttribute('aria-expanded', 'false');
+      send({type:'model_select', conversation:conversationId, model:value || null});
+    };
+    options.append(button);
+  }
+  const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = 'Refresh models';
+  refresh.onclick = () => send({type:'model_list', conversation:conversationId, refresh:true}); options.append(refresh);
+  trigger.disabled = false;
+  renderEffort(data);
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Use default effort';
+  reset.onclick = () => send({type:'effort_select', conversation:conversationId, model:effectiveModel, effort:null});
+  $('effort-menu').querySelector('[data-effort-reset]')?.remove(); reset.dataset.effortReset = ''; $('effort-menu').append(reset);
+}
+window.addEventListener('DOMContentLoaded', () => {
+  const trigger = $('chat-model'), menu = $('model-menu');
+  trigger.addEventListener('click', () => {
+    menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden));
+  });
+  document.addEventListener('click', event => {
+    if (!event.target.closest('.model-control')) { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false'); }
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !menu.hidden) { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); event.stopPropagation(); }
+  });
+  $('effort-trigger').onclick = () => {
+    $('model-menu').hidden = true; trigger.setAttribute('aria-expanded','false');
+    $('effort-menu').hidden = !$('effort-menu').hidden;
+    $('effort-trigger').setAttribute('aria-expanded', String(!$('effort-menu').hidden));
+  };
+  $('effort-slider').oninput = event => {
+    const value = effortLevels[Number(event.target.value)];
+    $('effort-value').textContent = value; event.target.setAttribute('aria-valuetext', value);
+  };
+  $('effort-slider').onchange = event => {
+    const value = effortLevels[Number(event.target.value)];
+    $('effort-trigger').disabled = true;
+    send({type:'effort_select', conversation:conversationId, model:effectiveModel, effort:value});
+  };
+  document.addEventListener('click', event => { if (!event.target.closest('.effort-control')) closeEffort(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('effort-menu').hidden) { closeEffort(); $('effort-trigger').focus(); } });
+});
 const chatQueues = new Map();
 const pendingTitleAnimations = new Map();
 function revealTitle(button, title) {
@@ -24,7 +120,7 @@ function revealTitle(button, title) {
 try { conversationId = localStorage.getItem('openassistant-conversation'); } catch { /* Storage optional. */ }
 function selectConversation(id = null) {
   if (ignore || !historyReady) {
-    return notice('Wait for the current chat change or stop to finish.');
+    return;
   }
   microphone.disable(); pendingSpeech = null; clearAudio();
   historyReady = false; controls(true);
@@ -92,6 +188,7 @@ window.addEventListener('DOMContentLoaded', () => {
     $('toggle-history').setAttribute('aria-expanded', String(open));
     if (open) refreshWidth();
     if (open && innerWidth <= 1100) showPanel(false);
+    if (open && innerWidth <= 650) showInbox(false);
   }
   showHistory(false);
   $('toggle-history').onclick = () => showHistory($('chat-history').hidden);
@@ -130,43 +227,56 @@ window.addEventListener('DOMContentLoaded', () => {
     buttons[next].focus();
   });
   $('new-chat').onclick = () => selectConversation();
-  $('refresh-chats').onclick = () => refreshHistory();
+  $('refresh-chats').onclick = () => refreshHistory(0, true);
   $('older-chats').onclick = () => refreshHistory(nextChatPage);
   $('search-chats').oninput = () => {
     clearTimeout(historySearchTimer);
     historySearchTimer = setTimeout(() => refreshHistory(), 200);
   };
 });
-function refreshHistory(offset = 0) {
+function refreshHistory(offset = 0, preserve = false) {
   if (ws?.readyState === WebSocket.OPEN) {
-    send({type:'conversations', offset, query:$('search-chats').value});
+    // Refresh the whole loaded prefix: moving between groups cannot skip a page boundary.
+    historyLimit = preserve ? historyLimit : Math.min(100050, offset + 50);
+    send({type:'conversations', offset:0, limit:historyLimit,
+      request_id:++historyRequest, query:$('search-chats').value});
   }
 }
 function historyEvent(data) {
+  if (data.type === 'model_options' || data.type === 'model_error') {
+    if (data.conversation === conversationId) renderModelOptions(data);
+    return true;
+  }
   if (data.type === 'conversation_hidden') {
-    refreshHistory();
+    refreshHistory(0, true);
     return true;
   }
   if (data.type === 'title_changed') {
     const row = [...$('saved-chats').children].find(item => item.dataset.id === data.id);
     const button = row?.querySelector('button:not(.remove-chat)');
     if (button && !$('chat-history').hidden) pendingTitleAnimations.set(data.id, button.getAttribute('aria-label') || button.textContent);
-    refreshHistory(); return true;
+    refreshHistory(0, true); return true;
   }
   if (data.type === 'chat_status') {
     const row = [...$('saved-chats').children].find(row => row.dataset.id === data.id);
     if (row) renderChatStatus(row, data.task);
-    else refreshHistory();
+    refreshHistory(0, true);
     return true;
   }
   if (data.type === 'conversations') {
     if ((data.query || '') !== $('search-chats').value) return true;
+    if (data.request_id != null && data.request_id !== historyRequest) return true;
     const list = $('saved-chats');
+    const focused = document.activeElement;
+    const focusedId = focused?.closest('li[data-id]')?.dataset.id;
+    const focusedRemove = focused?.classList.contains('remove-chat');
+    const scrollTop = list.scrollTop;
     if (!data.offset) list.replaceChildren();
     for (const chat of data.chats) {
       if ([...list.children].some(row => row.dataset.id === chat.id)) continue;
       const row = document.createElement('li'); row.dataset.id = chat.id;
-      if (list.children.length < 9) row.dataset.shortcut = String(list.children.length + 1);
+      const count = list.querySelectorAll('li[data-id]').length;
+      if (count < 9) row.dataset.shortcut = String(count + 1);
       const button = document.createElement('button'); button.textContent = chat.title;
       const previousTitle = pendingTitleAnimations.get(chat.id);
       pendingTitleAnimations.delete(chat.id);
@@ -191,13 +301,32 @@ function historyEvent(data) {
       if (previousTitle !== undefined && previousTitle !== chat.title) revealTitle(button, chat.title);
       renderChatStatus(row, chat.task);
     }
+    list.querySelectorAll('.chat-group').forEach(row => row.remove());
+    let group = null;
+    for (const row of list.querySelectorAll('li[data-id]')) {
+      const label = ['working', 'approval', 'input'].includes(row.dataset.task)
+        ? 'Active' : row.dataset.task === 'failed' ? 'Failed' : 'Finished & other chats';
+      if (group !== label) {
+        const heading = document.createElement('li'); heading.className = 'chat-group';
+        heading.setAttribute('role', 'presentation');
+        const title = document.createElement('h3');
+        title.textContent = label;
+        heading.append(title); list.insertBefore(heading, row); group = label;
+      }
+    }
     if (!list.children.length) {
       const empty = document.createElement('li'); empty.className = 'empty-chats';
-      empty.textContent = $('search-chats').value ? 'No matching chats.' : 'No chats yet.';
+      empty.textContent = $('search-chats').value ? 'No matching chats.' : 'No saved chats yet.';
       list.append(empty);
     }
     nextChatPage = data.next;
     $('older-chats').hidden = nextChatPage === null;
+    if (focusedId) {
+      const row = [...list.querySelectorAll('li[data-id]')].find(row => row.dataset.id === focusedId);
+      (row?.querySelector(focusedRemove ? '.remove-chat' : 'button:not(.remove-chat)')
+        || $('search-chats')).focus({preventScroll:true});
+    }
+    list.scrollTop = scrollTop;
     return true;
   }
   if (data.type === 'conversation_error') {
@@ -206,11 +335,10 @@ function historyEvent(data) {
       conversationId = null;
       try { localStorage.removeItem('openassistant-conversation'); } catch { /* Storage optional. */ }
       $('history-status').textContent = ''; notice('');
-      refreshHistory(); send({type:'new_conversation'});
-      return true;
+      refreshHistory(); send({type:'new_conversation'}); return true;
     }
     $('history-status').textContent = data.text;
-    notice(data.text);
+    notice(data.text + ' You can start a new chat.');
     return true;
   }
   if (data.type === 'conversation_busy') {
@@ -220,30 +348,33 @@ function historyEvent(data) {
     return true;
   }
   if (data.type === 'conversation') {
+    resetModelOptions();
     if (conversationId !== data.id) {
       if (conversationId) {
         const entries = textQueue.map(entry => ({...entry,
           status:entry.status === 'sending' ? 'unconfirmed' : entry.status}));
         if (sendingEntry) entries.unshift({...sendingEntry, status:'unconfirmed'});
-        chatQueues.set(conversationId, {entries, draft:$('prompt').value});
+        chatQueues.set(conversationId, {entries, draft:$('prompt').value, images:pendingImages});
       }
       const saved = chatQueues.get(data.id);
       textQueue.splice(0, textQueue.length, ...(saved?.entries || []));
       $('prompt').value = saved?.draft || '';
+      pendingImages = saved?.images || []; renderImageDraft();
       resizePrompt();
       sendingEntry = null;
       // A background chat's unsent queue never runs merely because it was reopened.
       queuePaused = textQueue.length > 0;
     }
-    clearRequests();
     conversationId = data.id; historyReady = true; observing = !!data.observer;
+    send({type:'model_list', conversation:conversationId});
     if (observing) { queuePaused = true; microphone.disable(); }
+    if (['failed', 'stopped', 'interrupted'].includes(data.task?.state)) queuePaused = true;
     try { localStorage.setItem('openassistant-conversation', data.id); } catch { /* Storage optional. */ }
     turn = data.turn; busy = data.busy; ignore = false; clearAudio();
     messages.clear(); clearImages(); $('transcript').replaceChildren();
     $('live-caption').hidden = true; $('live-response').hidden = true;
     $('task-panel').hidden = true; document.body.classList.remove('has-task');
-    activities.clear(); $('activity-list').replaceChildren();
+    activities.clear(); $('activity-list').replaceChildren(); renderPlan({steps:[]});
     taskPhase = 'idle'; taskStarted = null;
     $('status').textContent = data.busy ? 'Working' : 'Ready';
     const activeItems = new Set(data.busy ? (data.task?.responses || []).map(item => item.item) : []);
@@ -253,32 +384,33 @@ function historyEvent(data) {
     $('live-caption').hidden = true; $('live-response').hidden = true;
     if (!data.messages.length) {
       const empty = document.createElement('p'); empty.id = 'empty';
-      $('transcript').append(empty);
+      empty.textContent = 'Start a conversation with OpenAssistant.'; $('transcript').append(empty);
     }
-    $('history-status').textContent = data.busy ? (observing
-      ? 'Viewing another browser’s task.' : 'Task running.')
-      : data.truncated ? 'Showing recent messages.' : '';
+    $('history-status').textContent = data.busy && observing
+      ? 'Watching work from another browser.' : '';
     if (data.task) {
       const task = data.task;
-      if (!observing) for (const request of task.pending_ui || []) renderRequest(request, false);
       taskStarted = task.started ? task.started * 1000 : Date.now();
       $('task-time').textContent = `${Math.max(0, Math.floor((Date.now() - taskStarted) / 1000))}s elapsed`;
       $('task-request').textContent = task.request || '';
+      renderPlan({steps:task.steps || []});
       taskState(task.state || 'working', task.detail || 'Working');
-      $('status').textContent = data.busy ? 'Working' : 'Ready';
+      $('status').textContent = data.busy ? ({approval:'Needs approval', input:'Needs your answer'}[task.state] || 'Working') : 'Ready';
       for (const item of task.activities || []) activity(item);
       // Native history owns completed replies. The snapshot fills in the active turn only.
       if (data.busy) {
         for (const item of task.responses || []) message(`${turn}-${item.item}`, 'OpenAssistant', item.text, false, item.images || []);
       } else if (task.state === 'finished') {
         const latest = [...data.messages].reverse().find(item => item.who === 'OpenAssistant');
-        if (latest) { $('live-caption').textContent = latest.text; $('live-caption').hidden = false; }
+        if (latest) { showImages($('live-caption'), latest.text, latest.images || []); $('live-caption').hidden = false; }
       }
     } else if (data.busy) taskState('working', 'Watching a task started in another call.');
     if (innerWidth <= 1100) {
       $('chat-history').hidden = true; $('toggle-history').setAttribute('aria-expanded', 'false');
     }
-    controls(true); refreshHistory(); return true;
+    controls(true); refreshHistory(0, true);
+    if (!data.busy && data.task?.state === 'finished') dispatchQueued();
+    return true;
   }
   return false;
 }
@@ -289,7 +421,7 @@ function renderChatStatus(row, task) {
   if (!state) { delete row.dataset.task; return; }
   row.dataset.task = state;
   const label = document.createElement('span'); label.className = 'chat-task';
-  const labels = {working:'Working',
+  const labels = {working:'Working', approval:'Needs approval', input:'Needs your answer',
     finished:'Finished', failed:'Task error', stopped:'Stopped', interrupted:'Interrupted'};
   label.textContent = labels[state] || state;
   label.title = task.detail || label.textContent;

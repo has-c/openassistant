@@ -15,7 +15,7 @@ root = Path(__file__).resolve().parents[1] / "openassistant/live/static"
 
 async def main():
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        browser = await p.chromium.launch(channel="chrome", headless=True)
         page = await browser.new_page()
         errors = []
         uploads = []
