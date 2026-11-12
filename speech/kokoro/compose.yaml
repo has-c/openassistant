@@ -2,7 +2,7 @@ name: speech
 
 services:
   kokoro:
-    image: ghcr.io/remsky/kokoro-fastapi-cpu@sha256:03334df0f6de21df0138d2896f8211c20d1d513bae865e14a695b17d647bc961
+    image: ghcr.io/remsky/kokoro-fastapi-cpu@sha256:f54c5960c2b9387f6349080a9944f8bc7e8cdb98a4ef9238cb0b0f9ff9795f44
     container_name: openassistant-kokoro
     restart: unless-stopped
     ports:
